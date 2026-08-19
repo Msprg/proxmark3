@@ -93,7 +93,14 @@ if (PM5)
 endif ()
 
 # Fix: warning: bootrom\bootrom.elf has a LOAD segment with RWX permissions
-set(CROSS_LDFLAGS ${CROSS_LDFLAGS} -Wl,--no-warn-rwx-segments)
+# Only available since binutils 2.39; older linkers (e.g. Ubuntu 22.04 ships 2.38)
+# reject the unknown option and fail the link, so probe before adding it.
+execute_process(COMMAND ${CMAKE_C_COMPILER} -Wl,--no-warn-rwx-segments -nostdlib -x c /dev/null -o /dev/null
+        RESULT_VARIABLE LD_RWX_FLAG_UNSUPPORTED
+        OUTPUT_QUIET ERROR_QUIET)
+if (NOT LD_RWX_FLAG_UNSUPPORTED)
+    set(CROSS_LDFLAGS ${CROSS_LDFLAGS} -Wl,--no-warn-rwx-segments)
+endif ()
 
 # Create version_pm3.c before bootrom build.
 add_custom_command(
