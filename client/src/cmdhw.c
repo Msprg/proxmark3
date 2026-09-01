@@ -2090,7 +2090,7 @@ static command_t CommandTable[] = {
     {"bootloader", CmdBootloader, IfPm3Present, "Reboot into bootloader mode"},
     {"connect", CmdConnect, AlwaysAvailable, "Connect to the device via serial port"},
     {"dbg", CmdDbg, IfPm3Present, "Set device side debug level"},
-    {"fpga", CmdFPGA, IfPm3Present, "Fpga commands"},
+    {"fpga", CmdFPGA, IfPm3Present, "{ FPGA commands... }"},
     {"fpgaoff", CmdFPGAOff, IfPm3Present, "Turn off FPGA on device"},
     {"ant_pm5", CmdPM5Ant, IfPm5StdAnt, "Control the antennal of pm5"},
     {"qc_pm5", CmdPM5QCTest, IfPm5, "Perform QC test (hardware or IO) for the PM5"},
