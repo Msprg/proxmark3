@@ -75,6 +75,15 @@ typedef struct {
 
 int CLIParserInit(CLIParserContext **ctx, const char *vprogramName, const char *vprogramHint, const char *vprogramHelp);
 void CLIParserPrintHelp(CLIParserContext *ctx);
+
+// Argument table introspection, used by the line editor tab completion.
+// While a hook is installed, CLIParserParseArg() hands the argument table
+// over to the hook instead of parsing it and returns non zero, so the
+// command bails out right away, as it does after printing its help.
+// CLIParserPrintHelp() hands the table over instead of printing, too.
+typedef void (*CLIParserArgtableHook)(const char *programName, void *argtable[], size_t argtableLen, void *hookctx);
+void CLIParserSetArgtableHook(CLIParserArgtableHook hook, void *hookctx);
+
 int CLIParserParseString(CLIParserContext *ctx, const char *str, void *vargtable[], size_t vargtableLen, bool allowEmptyExec);
 int CLIParserParseStringEx(CLIParserContext *ctx, const char *str, void *vargtable[], size_t vargtableLen, bool allowEmptyExec, bool clueData);
 int CLIParserParseArg(CLIParserContext *ctx, int argc, char **argv, void *vargtable[], size_t vargtableLen, bool allowEmptyExec);
