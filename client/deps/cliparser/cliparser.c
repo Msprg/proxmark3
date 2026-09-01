@@ -52,6 +52,14 @@ static void expand_tilde_path(const char *src, char *dst, size_t dst_len) {
     snprintf(dst, dst_len, "%s", src);
 }
 
+static CLIParserArgtableHook s_argtable_hook = NULL;
+static void *s_argtable_hook_ctx = NULL;
+
+void CLIParserSetArgtableHook(CLIParserArgtableHook hook, void *hookctx) {
+    s_argtable_hook = hook;
+    s_argtable_hook_ctx = hookctx;
+}
+
 int CLIParserInit(CLIParserContext **ctx, const char *vprogramName, const char *vprogramHint, const char *vprogramHelp) {
     *ctx = calloc(sizeof(CLIParserContext), sizeof(uint8_t));
     if (*ctx == NULL) {
@@ -70,6 +78,12 @@ int CLIParserInit(CLIParserContext **ctx, const char *vprogramName, const char *
 }
 
 void CLIParserPrintHelp(CLIParserContext *ctx) {
+    /* introspection only: some commands print their help themselves, see CLIParserSetArgtableHook() */
+    if (s_argtable_hook != NULL) {
+        s_argtable_hook(ctx->programName, ctx->argtable, ctx->argtableLen, s_argtable_hook_ctx);
+        return;
+    }
+
     if (ctx->programHint) {
         PrintAndLogEx(NORMAL, "\n"_DescriptionColor_("%s"), ctx->programHint);
     }
@@ -141,6 +155,12 @@ int CLIParserParseArg(CLIParserContext *ctx, int argc, char **argv, void *vargta
         PrintAndLogEx(ERR, "ERROR: Insufficient memory\n");
         fflush(stdout);
         return 2;
+    }
+
+    /* introspection only: hand the table over and bail out, see CLIParserSetArgtableHook() */
+    if (s_argtable_hook != NULL) {
+        s_argtable_hook(ctx->programName, ctx->argtable, ctx->argtableLen, s_argtable_hook_ctx);
+        return 1;
     }
     /* Parse the command line as defined by argtable[] */
     nerrors = arg_parse(argc, argv, ctx->argtable);
