@@ -289,25 +289,23 @@ uint16_t bwm_fwd_rxdata_available(void) {
     return fifo_count();
 }
 
+// Gap the host is allowed between two pieces of one NG frame. The ESP forwards
+// every BLE write as its own DATA_FORWARD frame, so a command from a phone
+// arrives in MTU-sized pieces, one BLE connection event (tens of ms) apart.
+#define BWM_READ_GAP_US    500000
+#define BWM_READ_POLL_US   50
+
 uint32_t bwm_read_ng(uint8_t *data, size_t len) {
     if (len == 0) {
         return 0;
     }
 
-    // Same bounded-retry budget shape as bwm_uart_read(); USART_SLOW_LINK (set
-    // for the BWM/BLE link) widens it so a slow round-trip doesn't time out.
-    uint32_t tryconstant = 0;
-#ifdef USART_SLOW_LINK
-    tryconstant = 50000;
-#endif
-    uint32_t maxtry = 10 * (3000000 / BWM_UART_BAUD) + tryconstant;
-
     uint32_t out = 0;
-    uint32_t try = 0;
+    uint32_t idle_us = 0;
     while (out < len) {
         while (out < len && fifo_count() > 0) {
             data[out++] = fifo_pop();
-            try = 0;
+            idle_us = 0;
         }
         if (out >= len) {
             break;
@@ -315,12 +313,14 @@ uint32_t bwm_read_ng(uint8_t *data, size_t len) {
         uint16_t before = fifo_count();
         bwm_pump();
         if (fifo_count() != before) {
-            try = 0;
+            idle_us = 0;
             continue;
         }
-        if (try++ >= maxtry) {
-                break;
-            }
+        if (idle_us >= BWM_READ_GAP_US) {
+            break;
+        }
+        SpinDelayUs(BWM_READ_POLL_US);
+        idle_us += BWM_READ_POLL_US;
     }
     return out;
 }
