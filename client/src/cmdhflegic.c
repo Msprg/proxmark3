@@ -786,6 +786,7 @@ static int CmdLegicSim(const char *Cmd) {
         arg_lit0(NULL, "256", "LEGIC Prime MIM256 (def)"),
         arg_lit0(NULL, "1024", "LEGIC Prime MIM1024"),
         arg_str0("f", "file", "<fn>", "Optional dump file to load into emulator memory"),
+        arg_int0(NULL, "txoff", "<dec>", "PM5 only, shift tag reply timing by N ssp clocks (4.7us each, -30..30)"),
         arg_param_end
     };
     CLIExecWithReturn(ctx, Cmd, argtable, true);
@@ -795,7 +796,13 @@ static int CmdLegicSim(const char *Cmd) {
     int fnlen = 0;
     char filename[FILE_PATH_SIZE] = {0};
     CLIParamStrToBuf(arg_get_str(ctx, 4), (uint8_t *)filename, FILE_PATH_SIZE, &fnlen);
+    int txoff = arg_get_int_def(ctx, 5, 0);
     CLIParserFree(ctx);
+
+    if (txoff < -30 || txoff > 30) {
+        PrintAndLogEx(WARNING, "txoff out of range (-30..30)");
+        return PM3_EINVARG;
+    }
 
     // validations
     if (m1 + m2 + m3 > 1) {
@@ -834,9 +841,14 @@ static int CmdLegicSim(const char *Cmd) {
     struct {
         uint8_t tagtype;
         bool send_reply;
+        int8_t tx_offset;
     } PACKED payload;
 
     payload.send_reply = true;
+    payload.tx_offset = (int8_t)txoff;
+    if (txoff != 0) {
+        PrintAndLogEx(INFO, "Tag reply tx offset " _YELLOW_("%d") " ssp clocks (%d us)", txoff, txoff * 472 / 100);
+    }
     if (m1)
         payload.tagtype = 0;
     else if (m2)
