@@ -1,0 +1,87 @@
+name: Sync fork with upstream
+
+# Keeps Msprg/proxmark3:master in step with RfidResearchGroup/proxmark3:master.
+#  - fork behind upstream            -> fast-forward push
+#  - fork ahead by own commits only  -> nothing to do
+#  - diverged                        -> rebase own commits onto upstream,
+#                                       back up old head to master-before-sync,
+#                                       force-push with lease (fails on conflict, leaves master untouched)
+# Upstream tags are mirrored too so `git describe` versions match.
+#
+# Runs on GITHUB_TOKEN by default. If upstream changes a file under .github/workflows,
+# GITHUB_TOKEN may not push it; set a fine-grained PAT (Contents + Workflows: read/write
+# on this repo) as the SYNC_TOKEN secret and the workflow picks it up automatically.
+
+on:
+  schedule:
+    - cron: '23 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+env:
+  UPSTREAM: https://github.com/RfidResearchGroup/proxmark3.git
+  BRANCH: master
+  REBASE_OWN_COMMITS: "true"
+  BACKUP_BRANCH: master-before-sync
+
+jobs:
+  sync:
+    if: github.repository == 'Msprg/proxmark3'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+          token: ${{ secrets.SYNC_TOKEN || github.token }}
+
+      - name: Sync master and tags
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream "$UPSTREAM" 2>/dev/null || git remote set-url upstream "$UPSTREAM"
+          git fetch --quiet upstream "$BRANCH" 'refs/tags/*:refs/tags/*'
+          git fetch --quiet origin "$BRANCH"
+          git checkout --quiet -B "$BRANCH" "origin/$BRANCH"
+
+          fork=$(git rev-parse HEAD)
+          up=$(git rev-parse "upstream/$BRANCH")
+          echo "fork/$BRANCH     = $fork"
+          echo "upstream/$BRANCH = $up"
+
+          if [ "$fork" = "$up" ]; then
+            echo "Already in sync."
+          elif git merge-base --is-ancestor "$fork" "$up"; then
+            echo "Fork is behind by $(git rev-list --count "$fork".."$up") commit(s), fast-forwarding."
+            git push --quiet origin "$up:refs/heads/$BRANCH"
+          elif git merge-base --is-ancestor "$up" "$fork"; then
+            echo "Fork is ahead by $(git rev-list --count "$up".."$fork") own commit(s) and upstream has not moved. Nothing to do."
+          else
+            own=$(git rev-list --count "$up".."$fork")
+            new=$(git rev-list --count "$fork".."$up")
+            echo "Diverged: fork has $own own commit(s), upstream has $new new commit(s)."
+            if [ "${REBASE_OWN_COMMITS:-false}" != "true" ]; then
+              echo "::error::REBASE_OWN_COMMITS is not enabled; refusing to touch a diverged branch."
+              exit 1
+            fi
+            echo "Saving pre-sync $BRANCH to $BACKUP_BRANCH"
+            git push --quiet --force origin "$fork:refs/heads/$BACKUP_BRANCH"
+            if ! git rebase --quiet "upstream/$BRANCH"; then
+              git rebase --abort || true
+              echo "::error::Rebase of own commits onto upstream/$BRANCH hit conflicts. $BRANCH left untouched; resolve manually."
+              exit 1
+            fi
+            echo "Rebase clean, force-pushing (lease on $fork)."
+            git push --quiet --force-with-lease="refs/heads/$BRANCH:$fork" origin "HEAD:refs/heads/$BRANCH"
+          fi
+
+          echo "Pushing upstream tags."
+          git push --quiet origin 'refs/tags/*:refs/tags/*' || echo "::warning::Some tags could not be pushed (name clash with existing fork tags)."
+          echo "Done."
