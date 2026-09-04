@@ -2030,8 +2030,10 @@ static void PacketReceived(PacketCommandNG *packet) {
             struct p {
                 uint8_t tagtype;
                 bool send_reply;
+                int8_t tx_offset; // optional, older clients send 2 bytes
             } PACKED;
             struct p *payload = (struct p *) packet->data.asBytes;
+            LegicRfSimSetTxOffset((packet->length >= sizeof(struct p)) ? payload->tx_offset : 0);
             LegicRfSimulate(payload->tagtype, payload->send_reply);
             break;
         }

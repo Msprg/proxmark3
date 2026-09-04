@@ -5529,9 +5529,10 @@
                 "--22 LEGIC Prime MIM22",
                 "--256 LEGIC Prime MIM256 (def)",
                 "--1024 LEGIC Prime MIM1024",
-                "-f, --file <fn> Optional dump file to load into emulator memory"
+                "-f, --file <fn> Optional dump file to load into emulator memory",
+                "--txoff <dec> PM5 only, shift tag reply timing by N ssp clocks (4.7us each, -30..30)"
             ],
-            "usage": "hf legic sim [-h] [--22] [--256] [--1024] [-f <fn>]"
+            "usage": "hf legic sim [-h] [--22] [--256] [--1024] [-f <fn>] [--txoff <dec>]"
         },
         "hf legic view": {
             "command": "hf legic view",
