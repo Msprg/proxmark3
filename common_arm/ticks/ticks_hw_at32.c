@@ -178,10 +178,13 @@ void StartCountSspClk(void) {
     gpio_pin_mux_config(CRM_GPIO_COUNT_SSP_CLK, CRM_GPIO_COUNT_SSP_CLK_SOURCE, CRM_GPIO_COUNT_SSP_CLK_MUX); // important !!! remap gpio to be timer EXT(CHx) function.
 
     // timer init
-    tmr_input_config_type tmr_input_config_struct;
+    // zero-init: input_filter_value goes straight into CM1.C2DF, uninitialised it was
+    // a random 0..15 filter (random edge delay, >= 0xE rejects the 847 kHz ssp_clk entirely)
+    tmr_input_config_type tmr_input_config_struct = {0};
     tmr_input_config_struct.input_channel_select = AT32_TMR_COUNT_SSP_CLK_IN_CH;
     tmr_input_config_struct.input_mapped_select = TMR_CC_CHANNEL_MAPPED_DIRECT;
     tmr_input_config_struct.input_polarity_select = TMR_INPUT_RISING_EDGE;
+    tmr_input_config_struct.input_filter_value = 0; // no filter, count every rising edge like AT91
     tmr_input_channel_init(AT32_TMR_COUNT_SSP_CLK, &tmr_input_config_struct, TMR_CHANNEL_INPUT_DIV_1);
     tmr_trigger_input_select(AT32_TMR_COUNT_SSP_CLK, TMR_SUB_INPUT_SEL_C2DF2); // select the timer input trigger: C2IF2
     tmr_sub_mode_select(AT32_TMR_COUNT_SSP_CLK, TMR_SUB_EXTERNAL_CLOCK_MODE_A); // select the slave mode: external mode a
@@ -190,6 +193,8 @@ void StartCountSspClk(void) {
     tmr_cnt_dir_set(AT32_TMR_COUNT_SSP_CLK, TMR_COUNT_UP);
     // tmr_external_clock_mode2_config(CRM_TMR_COUNT_SSP_CLK, TMR_ES_FREQUENCY_DIV_1, TMR_ES_POLARITY_NON_INVERTED, 0x00); ext引脚而非ch2引脚时，使用此初始化函数
     tmr_counter_enable(AT32_TMR_COUNT_SSP_CLK, TRUE);
+    // start from 0 like AT91 (SWTRG), the timer is never stopped so re-entry would keep a stale count
+    AT32_TMR_COUNT_SSP_CLK->cval = 0;
 
     // TODO DXL 可能还得像原先的逻辑那样，跳过8个clock，去同步ssp的frame和时钟，因为我们没有用级联定时器这种操作，理论上
     //  可能只需要同步一次frame的上升和下降，因为在ssp-timode的实现下，frame的上升刚好是在lsb的上升沿去执行的，
