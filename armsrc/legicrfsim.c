@@ -36,6 +36,34 @@ static crc_t legic_crc;
 static uint8_t last_rx_len;
 static uint32_t last_rx_cmd;
 
+// last setup_phase() handshake, DBG_DEBUG only
+static uint8_t dbg_iv_len;
+static int32_t dbg_iv;
+static uint8_t dbg_ack_len;
+static int32_t dbg_ack;
+
+#ifdef PM5
+// reply advance in ssp_clk (4.72us): the reader samples our reply late otherwise
+#define LEGIC_SIM_TX_OFFSET_DEFAULT (-4)
+#endif
+
+static int8_t tx_offset;
+
+void LegicRfSimSetTxOffset(int8_t offset) {
+#ifdef PM5
+    // 0 from the client means platform default
+    tx_offset = (offset != 0) ? offset : LEGIC_SIM_TX_OFFSET_DEFAULT;
+#else
+    (void)offset;
+    tx_offset = 0;
+#endif
+}
+
+// moves only the DOUT switching moment, the protocol timeline stays untouched
+static inline uint32_t tx_deadline(uint32_t ts) {
+    return ts + (uint32_t)(int32_t)tx_offset;
+}
+
 //-----------------------------------------------------------------------------
 // Frame timing and pseudorandom number generator
 //
@@ -54,6 +82,12 @@ static uint32_t last_rx_cmd;
 //-----------------------------------------------------------------------------
 
 static uint32_t last_frame_end; /* ts of last bit of previews rx or tx frame */
+static bool tx_just_done;       /* set by tx_frame/tx_ack, consumed by rx_frame */
+
+// PM5: ssp_din drops low after our own load modulation and lingers ~200-300us,
+// hiding the reader's next command. Skip the drop, then wait for it to recover.
+#define TAG_DIN_SKIP          8 /* 38us */
+#define TAG_DIN_BLANK_MAX   100 /* 472us */
 
 #define TAG_FRAME_WAIT       70 /* 330us from READER frame end to TAG frame start */
 #define TAG_ACK_WAIT        758 /* 3.57ms from READER frame end to TAG write ACK */
@@ -151,7 +185,7 @@ static void tx_bit(bool bit) {
 
     // wait for tx timeslot to end
     last_frame_end += TAG_BIT_PERIOD;
-    while (GetCountSspClk() < last_frame_end) { };
+    while (GetCountSspClk() < tx_deadline(last_frame_end)) { };
     LED_C_OFF();
 }
 
@@ -169,7 +203,7 @@ static void tx_frame(uint32_t frame, uint8_t len) {
     // wait for next tx timeslot
     last_frame_end += TAG_FRAME_WAIT;
     legic_prng_forward(TAG_FRAME_WAIT / TAG_BIT_PERIOD - 1);
-    while (GetCountSspClk() < last_frame_end) { };
+    while (GetCountSspClk() < tx_deadline(last_frame_end)) { };
 
     // backup ts for trace log
     uint32_t last_frame_start = last_frame_end;
@@ -183,6 +217,7 @@ static void tx_frame(uint32_t frame, uint8_t len) {
 
     // disable subcarrier
     Gpio_SSC_DOUT_Low();
+    tx_just_done = true;
 
     // log
     uint8_t cmdbytes[] = {len, BYTEx(frame, 0), BYTEx(frame, 1)};
@@ -193,7 +228,7 @@ static void tx_ack(void) {
     // wait for ack timeslot
     last_frame_end += TAG_ACK_WAIT;
     legic_prng_forward(TAG_ACK_WAIT / TAG_BIT_PERIOD - 1);
-    while (GetCountSspClk() < last_frame_end) { };
+    while (GetCountSspClk() < tx_deadline(last_frame_end)) { };
 
     // backup ts for trace log
     uint32_t last_frame_start = last_frame_end;
@@ -204,6 +239,7 @@ static void tx_ack(void) {
 
     // disable subcarrier
     Gpio_SSC_DOUT_Low();
+    tx_just_done = true;
 
     // log
     uint8_t cmdbytes[] = {1, 1};
@@ -222,6 +258,15 @@ static int32_t rx_frame(uint8_t *len) {
     // add 2 SSP clock cycles (1 for tx and 1 for rx pipeline delay)
     // those will be subtracted at the end of the rx phase
     last_frame_end -= 2;
+
+#ifdef PM5
+    // a low right after our own frame is not a reader pause, see TAG_DIN_SKIP
+    if (tx_just_done) {
+        while (GetCountSspClk() < last_frame_end + TAG_DIN_SKIP) { };
+    }
+    (void)wait_for(RWD_PULSE, last_frame_end + TAG_DIN_BLANK_MAX);
+#endif
+    tx_just_done = false;
 
     // wait for first pause (start of frame)
     for (uint16_t i = 0; true; ++i) {
@@ -335,6 +380,14 @@ static void init_tag(void) {
 
     // start 212kHz timer (running from SSP Clock)
     StartCountSspClk();
+
+    if (g_dbglevel >= DBG_DEBUG) {
+        // time base check, 13.56 MHz / 64 => ~2119 counts per 10 ms
+        uint32_t t0 = GetCountSspClk();
+        SpinDelay(10);
+        Dbprintf("ssp_clk counter: %u counts / 10 ms (expected ~2119)", GetCountSspClk() - t0);
+        Dbprintf("tag reply tx offset: %d ssp_clk", tx_offset);
+    }
 }
 
 // Setup reader to card connection
@@ -354,6 +407,10 @@ static int32_t setup_phase(legic_card_select_t *p_card) {
 
     // wait for iv
     int32_t iv = rx_frame(&len);
+    dbg_iv_len = len;
+    dbg_iv = iv;
+    dbg_ack_len = 0;
+    dbg_ack = 0;
     if ((len != 7) || (iv < 0)) {
         return PM3_ETIMEOUT;
     }
@@ -376,6 +433,8 @@ static int32_t setup_phase(legic_card_select_t *p_card) {
 
     // wait for ack
     int32_t ack = rx_frame(&len);
+    dbg_ack_len = len;
+    dbg_ack = ack;
     if ((len != 6) || (ack < 0)) {
         return PM3_ETIMEOUT;
     }
@@ -414,6 +473,7 @@ static int32_t connected_phase(legic_card_select_t *p_card) {
     uint8_t len = 0;
 
     // wait for command
+    // no Dbprintf between rx and tx: on PM5 it blocks longer than the reply window
     int32_t cmd = rx_frame(&len);
     if (cmd < 0) {
         last_rx_len = len;
@@ -507,7 +567,13 @@ void LegicRfSimulate(uint8_t tagtype, bool send_reply) {
         }
 
         // wait for connection, restart on error
-        if (setup_phase(&card) != PM3_SUCCESS) {
+        int32_t setup_res = setup_phase(&card);
+        if (setup_res != PM3_SUCCESS) {
+            // skip idle carrier timeouts, only report when the reader sent something
+            if ((g_dbglevel >= DBG_DEBUG) && (dbg_iv_len > 0)) {
+                Dbprintf("LEGIC sim setup failed: res=%d iv len=%u val=%02x | ack len=%u val=%02x",
+                         setup_res, dbg_iv_len, (unsigned int)(dbg_iv & 0x7f), dbg_ack_len, (unsigned int)(dbg_ack & 0x3f));
+            }
             continue;
         }
 
@@ -538,6 +604,9 @@ OUT:
 
     switch_off();
     StopTicks();
+
+    // per-run value, must not leak into a later standalone run
+    tx_offset = 0;
 
     if (send_reply) {
         reply_ng(CMD_HF_LEGIC_SIMULATE, res, NULL, 0);
