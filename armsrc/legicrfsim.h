@@ -23,4 +23,7 @@
 
 void LegicRfSimulate(uint8_t tagtype, bool send_reply);
 
+// tag reply timing advance in ssp_clk counts (negative = earlier), PM5 only, 0 = default
+void LegicRfSimSetTxOffset(int8_t offset);
+
 #endif /* __LEGICRFSIM_H */
