@@ -4247,74 +4247,34 @@ void __attribute__((noreturn)) AppMain(void) {
         }
 
         // Press button for one second to enter a possible standalone mode
-        button_status = BUTTON_HELD(1000);
+        button_status = BUTTON_HELD(500);
         if (button_status == BUTTON_HOLD) {
+#ifdef PM5
+            // Release at 1-4 seconds for standalone; hold 4 seconds to power off.
+            LEDsoff();
+            LED_A_ON();
+            if (BUTTON_HELD(1000) == BUTTON_HOLD) {
+                LED(LED_A | LED_B | LED_C | LED_D, 0);
+                // Wait for a stable release before dropping the power latch.
+                unsigned int released_ms = 0;
+                while (released_ms < 100) {
+                    WDT_HIT();
+                    SpinDelay(1);
+                    released_ms = BUTTON_PRESS() ? 0 : released_ms + 1;
+                }
+                LEDsoff();
+                Gpio_ARM_Power_ON_Low();
+                while (1); // Wait for system power off.
+            }
+            LEDsoff();
+#endif
             /*
             * So this is the trigger to execute a standalone mod.  Generic entrypoint by following the standalone/standalone.h headerfile
             * All standalone mod "main loop" should be the RunMod() function.
             */
-#ifndef PM5
             allow_send_wtx = false;
             RunMod();
             allow_send_wtx = true;
-#else // TODO DXL Test long press to device shutdown, temporarily blocking standalone mod
-
-            /*
-            StartTicks();
-            I2C_init(true);
-            uint8_t addr = 0x51;
-            // 125 134 250 375 500 HFLED LFLED Q
-            // 1 0 0 0 0 1 1 1
-            uint8_t data = 0x87;
-            I2C_BufferWrite(&data, 1, 0x02, addr << 1);
-            FpgaDownloadAndGo(FPGA_BITSTREAM_LF);
-            FpgaSendCommand(FPGA_CMD_SET_PWR_PWM_LOW_COUNT, 4095);
-
-            static bool b = 0;
-            if (b) {
-                FpgaWriteConfWord(FPGA_MAJOR_MODE_OFF);
-                b = 0;
-            } else {
-                FpgaDownloadAndGo(FPGA_BITSTREAM_LF);
-                FpgaWriteConfWord(FPGA_MAJOR_MODE_LF_READER | FPGA_LF_ADC_READER_FIELD);
-                FpgaSendCommand(FPGA_CMD_SET_DIVISOR, LF_DIVISOR_125);
-                b = 1;
-            }
-            */
-
-            LEDsoff();
-            while (BUTTON_PRESS()) {
-                SpinDelay(50);
-                LED_A_INV();
-                SpinDelay(50);
-                LED_B_INV();
-                SpinDelay(50);
-                LED_C_INV();
-                SpinDelay(50);
-                LED_D_INV();
-            }
-            // Release for more than 100ms before truly shutting down, anti shake
-            uint8_t idx = 0;
-            while (!BUTTON_PRESS()) {
-                SpinDelay(10);
-                idx += 1;
-                if (idx == 10) {
-                    break;
-                }
-            }
-            LEDsoff();
-            if (idx == 10) {
-                SpinDelay(100);
-                LED_A_INV();
-                SpinDelay(100);
-                LED_A_INV();
-                SpinDelay(100);
-                LED_A_INV();
-                Gpio_ARM_Power_ON_Low();
-                while (1); // Wait for system power off.
-            }
-
-#endif
         }
     }
 }
