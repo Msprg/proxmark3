@@ -169,18 +169,61 @@ static const vocabulary_arg_t *complete_option_of(const complete_t *c, const cha
     return NULL;
 }
 
-// How many times an argument is given in line[from..to)
-static int complete_option_uses(const complete_t *c, const char *line, size_t from, size_t to, const vocabulary_arg_t *arg) {
-    int uses = 0;
+typedef struct {
+    const vocabulary_arg_t *value_of;
+    size_t tokens;
+    size_t positionals;
+    bool options_done;
+    int uses;
+} complete_scan_t;
+
+// Track option values and occurrences with the same token rules.
+static complete_scan_t complete_scan(const complete_t *c, const char *line, size_t from, size_t to,
+                                     const vocabulary_arg_t *count_arg) {
+    complete_scan_t scan = {0};
     size_t pos = from;
-    const char *token = NULL;
-    size_t token_len = 0;
-    while (complete_next_token(line, to, &pos, &token, &token_len)) {
-        if (complete_option_of(c, token, token_len) == arg) {
-            uses++;
+    const char *token;
+    size_t len;
+    while (complete_next_token(line, to, &pos, &token, &len)) {
+        scan.tokens++;
+        if (scan.value_of != NULL) {
+            scan.value_of = NULL;
+            continue;
+        }
+        if (scan.options_done || token[0] != '-' || len == 1) {
+            scan.positionals++;
+            continue;
+        }
+        if (len == 2 && token[1] == '-') {
+            scan.options_done = true;
+            continue;
+        }
+        if (token[1] == '-') {
+            const vocabulary_arg_t *arg = complete_option_of(c, token, len);
+            if (arg != NULL) {
+                scan.uses += (arg == count_arg);
+                if (arg->has_value && memchr(token, '=', len) == NULL) {
+                    scan.value_of = arg;
+                }
+            }
+            continue;
+        }
+        for (size_t i = 1; i < len; i++) {
+            char option[] = {'-', token[i], '\0'};
+            const vocabulary_arg_t *arg = complete_option_of(c, option, 2);
+            if (arg == NULL) {
+                break;
+            }
+            scan.uses += (arg == count_arg);
+            if (arg->has_value) {
+                if (i + 1 == len) {
+                    scan.value_of = arg;
+                }
+                break;
+            }
         }
     }
-    return uses;
+    return scan;
 }
 
 // Decide what Tab should do for the word line[start..end).
@@ -281,44 +324,56 @@ static void complete_analyse(complete_t *c, const char *line, size_t start, size
     }
     pm3line_vocabulary_get_args(c->cmd, &c->args, &c->args_count);
 
-    // Parameters given so far: the option the word would be the value of,
-    // and how many positional values came before the word
-    const vocabulary_arg_t *value_of = NULL;
-    size_t tokens = 0;
-    size_t positionals = 0;
+    // Find the whole token even when readline starts after a quote or '='.
+    size_t token_start = start;
     size_t pos = args_offset;
-    const char *token = NULL;
-    size_t token_len = 0;
-    while (complete_next_token(line, start, &pos, &token, &token_len)) {
-        tokens++;
-
-        // the value of the option before it
-        if (value_of != NULL) {
-            value_of = NULL;
-            continue;
+    const char *token;
+    size_t token_len;
+    while (complete_next_token(line, end, &pos, &token, &token_len)) {
+        if ((size_t)(token - line) <= start && pos >= start) {
+            token_start = token - line;
+            break;
         }
+    }
+    complete_scan_t scan = complete_scan(c, line, args_offset, token_start, NULL);
+    const vocabulary_arg_t *value_of = scan.value_of;
+    size_t tokens = scan.tokens;
+    size_t positionals = scan.positionals;
 
-        const vocabulary_arg_t *arg = complete_option_of(c, token, token_len);
-        if (arg != NULL) {
-            // "--file=value" carries its value, except "--file=" right before the word
-            const char *eq = (token[1] == '-') ? memchr(token, '=', token_len) : NULL;
-            if (arg->has_value && (eq == NULL || (eq == token + token_len - 1 && token + token_len == line + start))) {
+    if (!scan.options_done && value_of == NULL && token_start < end && line[token_start] == '-') {
+        const char *current = line + token_start;
+        size_t len = end - token_start;
+        const vocabulary_arg_t *arg = complete_option_of(c, current, len);
+        if (len > 2 && current[1] == '-') {
+            if (arg != NULL && memchr(current, '=', len) != NULL) {
                 value_of = arg;
             }
-            continue;
+        } else {
+            for (size_t i = 1; i < len; i++) {
+                char option[] = {'-', current[i], '\0'};
+                arg = complete_option_of(c, option, 2);
+                if (arg == NULL) {
+                    break;
+                }
+                if (arg->has_value) {
+                    if (i + 1 < len) {
+                        value_of = arg;
+                    }
+                    break;
+                }
+            }
         }
-
-        if (token_len > 1 && token[0] == '-') {
-            // an option we don't know of
-            continue;
-        }
-        positionals++;
     }
 
     const char *word = line + start;
     size_t word_len = end - start;
 
     if (value_of != NULL) {
+        // The editor must replace only the value, never an attached option name.
+        if (scan.value_of == NULL && start == token_start) {
+            c->kind = COMPLETE_NONE;
+            return;
+        }
         c->kind = value_of->is_file ? COMPLETE_FILE : COMPLETE_NONE;
         return;
     }
@@ -332,7 +387,7 @@ static void complete_analyse(complete_t *c, const char *line, size_t start, size
         return;
     }
 
-    if (word_len > 0 && word[0] != '-') {
+    if (scan.options_done || (word_len > 0 && word[0] != '-')) {
         // the positional argument the word is for, if any
         size_t seen = 0;
         for (size_t i = 0; i < c->args_count; i++) {
@@ -357,7 +412,7 @@ static void complete_analyse(complete_t *c, const char *line, size_t start, size
         if (arg->shortopts == NULL && arg->longopts == NULL) {
             continue;
         }
-        if (arg->maxcount > 0 && complete_option_uses(c, line, args_offset, start, arg) >= arg->maxcount) {
+        if (arg->maxcount > 0 && complete_scan(c, line, args_offset, token_start, arg).uses >= arg->maxcount) {
             continue;
         }
         // Don't push the help option on someone who didn't start typing an
@@ -505,21 +560,22 @@ static char *rl_option_generator(const char *text, int state) {
     return NULL;
 }
 
-// An empty completion match: readline inserts nothing and, unlike a NULL
-// return, does not ring the bell. Only GNU readline can suppress the trailing
+// Preserve the word on a no-op. Only GNU readline can suppress the trailing
 // space it would otherwise append, so elsewhere this falls back to the bell.
-static char **rl_no_op_match(void) {
+static char **rl_no_op_match(const char *text) {
 #if defined(HAVE_GNU_READLINE)
     char **matches = calloc(2, sizeof(char *));
     if (matches != NULL) {
-        matches[0] = str_dup("");
+        matches[0] = str_dup(text);
         if (matches[0] != NULL) {
             rl_completion_suppress_append = 1;
+            rl_completion_suppress_quote = 1;
             return matches;
         }
         free(matches);
     }
 #endif
+    (void) text;
     return NULL;
 }
 
@@ -565,6 +621,12 @@ static bool rl_flash_input(void) {
 
     if (rl_end <= 0 || g_session.supports_colors == false) {
         return false;
+    }
+
+    for (const unsigned char *p = (const unsigned char *)rl_line_buffer; *p; p++) {
+        if (*p < 32 || *p >= 127) {
+            return false;
+        }
     }
 
     // bail if the prompt plus the input does not fit on a single screen row
@@ -649,46 +711,17 @@ static char **rl_command_completion(const char *text, int start, int end) {
             fputc('\n', rl_outstream);
             pm3line_vocabulary_print_help(s_complete.cmd);
             rl_forced_update_display();
-            return rl_no_op_match();
+            return rl_no_op_match(text);
         }
 
         case COMPLETE_NONE:
         default: {
-            // Nothing to offer. The "nothing" feedback (a red blink, see
-            // pm3_complete()) is given by our Tab handler, which intercepts this
-            // case before readline would ring the bell; reaching here anyway,
-            // just do nothing.
-            return NULL;
+            if (!rl_flash_input()) {
+                rl_ding();
+            }
+            return rl_no_op_match(text);
         }
     }
-}
-
-// Tab handler. It wraps readline's completion so the "nothing to offer" case can
-// blink the input red instead of ringing the bell, without readline redrawing
-// the prompt on top (which piles up on repeated presses). Everything else is
-// left to rl_complete(), which drives rl_command_completion() as usual.
-static int pm3_complete(int count, int key) {
-
-    // find the current word the way rl_complete() does, using readline's own
-    // word break characters, so our decision matches the real completion
-    int end = rl_point;
-    int start = rl_point;
-    const char *breaks = rl_completer_word_break_characters ? rl_completer_word_break_characters : " \t\n";
-    while (start > 0 && strchr(breaks, rl_line_buffer[start - 1]) == NULL) {
-        start--;
-    }
-
-    complete_analyse(&s_complete, rl_line_buffer, (size_t)start, (size_t)end);
-
-    if (s_complete.kind == COMPLETE_NONE) {
-        // ring the bell (audible cue) and flash the input red (visible cue);
-        // the flash redraws last so the cursor is left in the right place
-        rl_ding();
-        rl_flash_input();
-        return 0;
-    }
-
-    return rl_complete(count, key);
 }
 
 // Show ambiguous options the way the help does, with their description
@@ -741,7 +774,7 @@ static void ln_command_completion(const char *text, linenoiseCompletions *lc) {
     size_t prev_match_len = 0;
     size_t len = strlen(text);
     size_t start = len;
-    while (start > 0 && text[start - 1] != ' ') {
+    while (start > 0 && text[start - 1] != ' ' && text[start - 1] != '\t') {
         start--;
     }
 
@@ -883,9 +916,9 @@ void pm3line_init(void) {
     /* initialize history */
     using_history();
     rl_readline_name = "PM3";
+    rl_completer_quote_characters = "\"'";
     rl_attempted_completion_function = rl_command_completion;
     rl_completion_display_matches_hook = rl_display_matches;
-    rl_bind_key('\t', pm3_complete);
 
 // don't hook signal in MINGW
 #if defined(__MINGW32__) || defined(__MINGW64__)

@@ -267,7 +267,7 @@ bool pm3line_vocabulary_is_available(const vocabulary_t *entry) {
     return true;
 }
 
-const vocabulary_t *pm3line_vocabulary_find_command(const char *line, size_t len, size_t *args_offset) {
+static const vocabulary_t *vocab_resolve(const char *line, size_t len, size_t *args_offset, char *category, size_t category_size) {
 
     size_t count = 0;
     const vocabulary_t *vocabulary = pm3line_vocabulary_get(&count);
@@ -286,15 +286,18 @@ const vocabulary_t *pm3line_vocabulary_find_command(const char *line, size_t len
 
     while (true) {
 
-        while (li < len && line[li] == ' ') {
+        while (li < len && isspace((unsigned char)line[li])) {
             li++;
         }
         if (li >= len) {
+            if (category != NULL && resolved_len > 0 && resolved_len < category_size) {
+                memcpy(category, resolved, resolved_len + 1);
+            }
             return NULL;   // command not (yet) followed by a space and arguments
         }
 
         size_t lstart = li;
-        while (li < len && line[li] != ' ') {
+        while (li < len && !isspace((unsigned char)line[li])) {
             li++;
         }
         const char *ltok = line + lstart;
@@ -323,7 +326,7 @@ const vocabulary_t *pm3line_vocabulary_find_command(const char *line, size_t len
             const char *sp = strchr(tok, ' ');
             size_t tok_len = sp ? (size_t)(sp - tok) : strlen(tok);
 
-            if (ltok_len > tok_len || strncmp(tok, ltok, ltok_len) != 0) {
+            if (ltok_len > tok_len || strncasecmp(tok, ltok, ltok_len) != 0) {
                 continue;
             }
 
@@ -363,12 +366,12 @@ const vocabulary_t *pm3line_vocabulary_find_command(const char *line, size_t len
             if (e->cmd != NULL && pm3line_vocabulary_is_available(e) && strcmp(e->name, resolved) == 0) {
                 // the command must be followed by a space, so what comes next are
                 // its arguments and not more of the command still being typed
-                if (li >= len || line[li] != ' ') {
+                if (li >= len || !isspace((unsigned char)line[li])) {
                     return NULL;
                 }
                 if (args_offset != NULL) {
                     size_t offset = li;
-                    while (offset < len && line[offset] == ' ') {
+                    while (offset < len && isspace((unsigned char)line[offset])) {
                         offset++;
                     }
                     *args_offset = offset;
@@ -379,115 +382,17 @@ const vocabulary_t *pm3line_vocabulary_find_command(const char *line, size_t len
     }
 }
 
+const vocabulary_t *pm3line_vocabulary_find_command(const char *line, size_t len, size_t *args_offset) {
+    return vocab_resolve(line, len, args_offset, NULL, 0);
+}
+
 bool pm3line_vocabulary_resolve_category(const char *line, size_t len, char *out, size_t out_size) {
-
-    size_t count = 0;
-    const vocabulary_t *vocabulary = pm3line_vocabulary_get(&count);
-
-    // Resolve token by token exactly like pm3line_vocabulary_find_command(), but
-    // consume the whole range instead of stopping at the first leaf: an exact
-    // token match wins, otherwise a unique prefix, otherwise it's ambiguous.
-    char resolved[MAX_PM3_INPUT_ARGS_LENGTH] = {0};
-    size_t resolved_len = 0;
-    size_t li = 0;
-    bool any = false;
-
-    while (true) {
-
-        while (li < len && line[li] == ' ') {
-            li++;
-        }
-        if (li >= len) {
-            break;   // all tokens consumed
-        }
-
-        size_t lstart = li;
-        while (li < len && line[li] != ' ') {
-            li++;
-        }
-        const char *ltok = line + lstart;
-        size_t ltok_len = li - lstart;
-
-        const char *exact = NULL, *prefix = NULL;
-        size_t exact_len = 0, prefix_len = 0;
-        bool prefix_ambiguous = false;
-
-        for (size_t i = 0; i < count; i++) {
-
-            const vocabulary_t *e = &vocabulary[i];
-            if (e->cmd == NULL || pm3line_vocabulary_is_available(e) == false) {
-                continue;
-            }
-            if (resolved_len > 0) {
-                if (strncmp(e->name, resolved, resolved_len) != 0 || e->name[resolved_len] != ' ') {
-                    continue;
-                }
-            }
-
-            const char *tok = e->name + (resolved_len ? resolved_len + 1 : 0);
-            const char *sp = strchr(tok, ' ');
-            size_t tok_len = sp ? (size_t)(sp - tok) : strlen(tok);
-
-            if (ltok_len > tok_len || strncmp(tok, ltok, ltok_len) != 0) {
-                continue;
-            }
-
-            if (tok_len == ltok_len) {
-                exact = tok;
-                exact_len = tok_len;
-            } else if (prefix == NULL) {
-                prefix = tok;
-                prefix_len = tok_len;
-            } else if (prefix_len != tok_len || strncmp(prefix, tok, tok_len) != 0) {
-                prefix_ambiguous = true;
-            }
-        }
-
-        const char *chosen = exact ? exact : prefix;
-        size_t chosen_len = exact ? exact_len : prefix_len;
-        if (chosen == NULL || (exact == NULL && prefix_ambiguous)) {
-            return false;   // nothing matches, or the abbreviation is ambiguous
-        }
-
-        if (resolved_len + (resolved_len ? 1 : 0) + chosen_len >= sizeof(resolved)) {
-            return false;
-        }
-        if (resolved_len > 0) {
-            resolved[resolved_len++] = ' ';
-        }
-        memcpy(resolved + resolved_len, chosen, chosen_len);
-        resolved_len += chosen_len;
-        resolved[resolved_len] = '\0';
-        any = true;
-    }
-
-    if (any == false) {
-        return false;   // nothing to resolve
-    }
-
-    // The resolved name must be a category: not a leaf command itself, but some
-    // command continues past it ("resolved <child> ...").
-    bool is_leaf = false, has_child = false;
-    for (size_t i = 0; i < count; i++) {
-        const vocabulary_t *e = &vocabulary[i];
-        if (e->cmd == NULL || pm3line_vocabulary_is_available(e) == false) {
-            continue;
-        }
-        if (strcmp(e->name, resolved) == 0) {
-            is_leaf = true;
-        } else if (strncmp(e->name, resolved, resolved_len) == 0 && e->name[resolved_len] == ' ') {
-            has_child = true;
-        }
-    }
-    if (is_leaf || has_child == false) {
+    if (out_size == 0) {
         return false;
     }
-
-    if (resolved_len >= out_size) {
-        return false;
-    }
-    memcpy(out, resolved, resolved_len + 1);
-    return true;
+    out[0] = '\0';
+    vocab_resolve(line, len, NULL, out, out_size);
+    return out[0] != '\0';
 }
 
 // The value scan function of arg_file entries, to recognise them without
