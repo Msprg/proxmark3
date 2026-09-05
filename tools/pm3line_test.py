@@ -92,6 +92,20 @@ def main():
                 actual = line.split(b"--> ", 1)[-1].decode().rstrip("\b")
                 assert actual == expected, (typed, actual, expected)
                 print(f"PASS {typed!r}")
+
+            # Inspect output before a forced redraw can hide extra prompts.
+            for command in ("hf sea", "data loa"):
+                os.write(fd, b"\x01\x0b" + command.encode())
+                for attempt in range(5):
+                    os.write(fd, b"\t")
+                    output = read_until(fd, b"--> ")
+                    while select.select([fd], [], [], 0.1)[0]:
+                        output += os.read(fd, 65536)
+                    assert output.count(b"usage:") == 1, (command, attempt, output)
+                    assert output.count(b"--> ") == 1, (command, attempt, output)
+                    completed = "hf search " if command == "hf sea" else "data load "
+                    assert completed.encode() in output.rsplit(b"--> ", 1)[-1], output
+                print(f"PASS repeated help for {command!r}")
         finally:
             os.kill(pid, signal.SIGTERM)
             os.waitpid(pid, 0)

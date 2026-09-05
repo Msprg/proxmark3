@@ -678,7 +678,7 @@ static char **rl_command_completion(const char *text, int start, int end) {
             // space and repaints the prompt below the help.
             fputc('\n', rl_outstream);
             pm3line_vocabulary_print_help(s_complete.cmd);
-            rl_forced_update_display();
+            rl_on_new_line();
 
             char **matches = calloc(2, sizeof(char *));
             if (matches != NULL) {
@@ -710,7 +710,7 @@ static char **rl_command_completion(const char *text, int start, int end) {
             // readline ring the bell.
             fputc('\n', rl_outstream);
             pm3line_vocabulary_print_help(s_complete.cmd);
-            rl_forced_update_display();
+            rl_on_new_line();
             return rl_no_op_match(text);
         }
 
