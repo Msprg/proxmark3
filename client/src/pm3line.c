@@ -668,7 +668,11 @@ static char **rl_command_completion(const char *text, int start, int end) {
     switch (s_complete.kind) {
 
         case COMPLETE_COMMAND: {
-            return rl_completion_matches(text, rl_command_generator);
+            char **matches = rl_completion_matches(text, rl_command_generator);
+            if (matches == NULL) {
+                rl_flash_input();
+            }
+            return matches;
         }
 
         case COMPLETE_COMMAND_HELP: {
@@ -716,10 +720,9 @@ static char **rl_command_completion(const char *text, int start, int end) {
 
         case COMPLETE_NONE:
         default: {
-            if (!rl_flash_input()) {
-                rl_ding();
-            }
-            return rl_no_op_match(text);
+            rl_flash_input();
+            // Let readline ring the bell; a synthetic match can be listed on Tab.
+            return NULL;
         }
     }
 }

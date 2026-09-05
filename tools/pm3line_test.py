@@ -106,6 +106,18 @@ def main():
                     completed = "hf search " if command == "hf sea" else "data load "
                     assert completed.encode() in output.rsplit(b"--> ", 1)[-1], output
                 print(f"PASS repeated help for {command!r}")
+            for command in ("hf leg sf", "hf leg sf "):
+                os.write(fd, b"\x01\x0b" + command.encode() + b"\x0c")
+                read_until(fd, command.encode())
+                for attempt in range(5):
+                    os.write(fd, b"\t")
+                    output = read_until(fd, b"\a")
+                    while select.select([fd], [], [], 0.1)[0]:
+                        output += os.read(fd, 65536)
+                    assert output.count(b"\a") == 1, (command, attempt, output)
+                    assert b"\x1b[31m" + command.encode() in output, (command, attempt, output)
+                    assert b"\n" not in output, (command, attempt, output)
+                print(f"PASS no-match feedback for {command!r}")
         finally:
             os.kill(pid, signal.SIGTERM)
             os.waitpid(pid, 0)
