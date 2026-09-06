@@ -69,12 +69,11 @@
 // period is 2 * 1CLK + 2CLK, 62 us or about 16 kHz. Every timeout below derives
 // from these, so they are the only two numbers to change.
 //
-// 5/7 (59 kHz) has been tried twice and is too fast: the link works for a while
-// then corrupts, an ATR coming back with flipped bits and a mangled length
-// header rather than not arriving at all. Anything below 20/22 wants a scope on
-// SCL/SDA first.
-#define I2C_DELAY_1CLK_US       20
-#define I2C_DELAY_2CLK_US       22
+//Old value was 20/22 (16 kHz) - increased to 4/2 (100 kHz) and seems to be working reliably.
+//It was previously reported that 5/7 (59 kHz) was too fast, but this was before SIM module firmware updates.
+//Values above 4/2 (100 kHz) have been tested to work successfully, but they seem to run slower than 4/2.
+#define I2C_DELAY_1CLK_US       4
+#define I2C_DELAY_2CLK_US       2
 
 // Only one delay per bit is rise time critical: the one bracketing an SDA
 // transition, where a released line has to charge through the pull-up before
