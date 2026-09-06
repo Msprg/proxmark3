@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+# Rebuild + flash for the Proxmark3 Easy (PM3GENERIC platform).
+#
+# Fast path: nothing is cleaned.
+#  - firmware and host tools: make (ccache is enabled by the platform file, and the
+#    root Makefile cleans bootrom/armsrc/recovery itself when the platform changes)
+#  - client: CMake + Ninja + ccache in a per-platform build dir, so switching
+#    between PM5 and PM3 Easy never invalidates the other platform's objects
+set -euo pipefail
+cd "$(dirname "$0")"
+
+PLTFRM=Makefile.pm3easy.platform
+PLATFORM=PM3GENERIC
+CLIENT_BUILD=client/build-pm3easy
+# TARGETS of the root Makefile, minus client
+FW_TOOLS="bootrom armsrc recovery mfc_card_only mfc_card_reader mfd_aes_brute mfulc_des_brute fpga_compress cryptorf"
+
+step() { printf '\n[%s] %s (t=%ds)\n' "$(basename "$0")" "$1" "$SECONDS"; }
+
+step "firmware + host tools"
+make -j $(printf '%s/all ' $FW_TOOLS) PLATFORM_FILE=$PLTFRM
+
+step "client (cmake + ninja)"
+if [ ! -f "$CLIENT_BUILD/build.ninja" ]; then
+    cmake -G Ninja -DPLATFORM=$PLATFORM \
+          -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+          -S client -B "$CLIENT_BUILD"
+fi
+ninja -C "$CLIENT_BUILD"
+# pm3-flash-all uses client/proxmark3
+cp -p "$CLIENT_BUILD/proxmark3" client/proxmark3
+
+step "flash"
+./pm3-flash-all
+
+step "done"
