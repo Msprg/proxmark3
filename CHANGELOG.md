@@ -3,6 +3,7 @@ All notable changes to this project will be documented in this file.
 This project uses the changelog in accordance with [keepchangelog](http://keepachangelog.com/). Please use this to write notable changes, which is not the same as git commit log...
 
 ## [unreleased][unreleased]
+- Added `hf mfu ndefformat` - NDEF format Ultralight/NTAG tags, restores the NXP factory Capability Container for the detected type (@0x6r1an0y)
 - Changed `lf hitag` - refactoring hitag2 operations and now they work much better (@iceman1001)
 - Fixed `lf hitag list` - now prints in same style like the rest (@iceman1001)
 - Changed pathing - client now supports `~/` tilde sign in paths (@iceman1001)
