@@ -39,7 +39,7 @@
 #include "graph.h"
 #include "crc16.h"              // iso15 crc
 #include "cmddata.h"            // getsamples
-#include "fileutils.h"          // pm3_save_dump
+#include "fileutils.h"          // pm3_save_dump_json, convert_15_dump_format
 #include "cliparser.h"
 #include "util_posix.h"         // msleep
 #include "iso15.h"              // typedef structs / enum
@@ -1649,7 +1649,7 @@ static int hf15EmlSetMem(const uint8_t *data, uint16_t count, size_t offset) {
         uint8_t data[];
     } PACKED;
 
-    if (count > (PM3_CMD_DATA_SIZE - sizeof(struct p))) {
+    if (count > (g_conn.max_cmd_data_size - sizeof(struct p))) {
         return PM3_ESOFT;
     }
 
@@ -1700,6 +1700,13 @@ static int CmdHF15ELoad(const char *Cmd) {
         PrintAndLogEx(FAILED, "Memory image empty.");
         free(tag);
         return PM3_EINVARG;
+    }
+
+    // a .bin may hold an older struct revision, upgrade it before the checks below
+    res = convert_15_dump_format((uint8_t **)&tag, &bytes_read, true);
+    if (res != PM3_SUCCESS) {
+        free(tag);
+        return res;
     }
 
     if (bytes_read != sizeof(iso15_tag_t)) {
@@ -1795,7 +1802,7 @@ static int CmdHF15ESave(const char *Cmd) {
         return PM3_ETIMEOUT;
     }
 
-    pm3_save_dump(filename, dump, bytes, jsf15_v4);
+    pm3_save_dump_json(filename, dump, bytes, jsf15_v5);
 
     free(dump);
     return PM3_SUCCESS;
@@ -2259,10 +2266,12 @@ static int CmdHF15WriteDsfid(const char *Cmd) {
 static int CmdHF15Dump(const char *Cmd) {
     CLIParserContext *ctx;
     CLIParserInit(&ctx, "hf 15 dump",
-                  "This command dumps the contents of a ISO-15693 tag and save to file (bin/json)",
+                  "This command dumps the contents of a ISO-15693 tag and saves it to a JSON file.\n"
+                  "Writing .bin is no longer supported, the raw struct carries no layout\n"
+                  "information. Reading .bin/.eml/.json all still work.",
                   "hf 15 dump\n"
                   "hf 15 dump -*\n"
-                  "hf 15 dump -u E011223344556677 -f hf-15-my-dump.bin"
+                  "hf 15 dump -u E011223344556677 -f hf-15-my-dump"
                  );
 
     void *argtable[6 + 6] = {0};
@@ -2521,7 +2530,7 @@ static int CmdHF15Dump(const char *Cmd) {
         FillFileNameByUID(fptr, SwapEndian64(uid, sizeof(uid), 8), "-dump", sizeof(uid));
     }
 
-    pm3_save_dump(filename, (uint8_t *)tag, sizeof(iso15_tag_t), jsf15_v4);
+    pm3_save_dump_json(filename, (uint8_t *)tag, sizeof(iso15_tag_t), jsf15_v5);
 
     free(tag);
     return PM3_SUCCESS;
@@ -2566,11 +2575,11 @@ static int CmdHF15Raw(const char *Cmd) {
     bool wait = arg_get_lit(ctx, 7);
     CLIParserFree(ctx);
 
-    datalen = (datalen >= PM3_CMD_DATA_SIZE) ? PM3_CMD_DATA_SIZE : datalen;
+    datalen = (datalen >= g_conn.max_cmd_data_size) ? g_conn.max_cmd_data_size : datalen;
 
     if (crc) {
 
-        if ((datalen - 2) < PM3_CMD_DATA_SIZE) {
+        if ((datalen - 2) < g_conn.max_cmd_data_size) {
             AddCrc15(data, datalen);
             datalen += 2;
         } else {
@@ -3222,6 +3231,13 @@ static int CmdHF15Restore(const char *Cmd) {
         return PM3_EINVARG;
     }
 
+    // a .bin may hold an older struct revision, upgrade it before the checks below
+    res = convert_15_dump_format((uint8_t **)&tag, &bytes_read, verbose);
+    if (res != PM3_SUCCESS) {
+        free(tag);
+        return res;
+    }
+
     if (bytes_read != sizeof(iso15_tag_t)) {
         PrintAndLogEx(FAILED, "Memory image is not matching tag structure.");
         free(tag);
@@ -3450,7 +3466,7 @@ static int CmdHF15CSetUID(const char *Cmd) {
         [=]   16 | 77 66 55 44 | 0 | wfUD
         [=]   17 | 33 22 11 E0 | 0 | 3"..
         */
-        uint8_t blk_lo[4] = {0}; 
+        uint8_t blk_lo[4] = {0};
         uint8_t blk_hi[4] = {0};
         reverse_array_copy(payload.uid + 4, 4, blk_lo);
         reverse_array_copy(payload.uid, 4, blk_hi);
@@ -4153,6 +4169,13 @@ static int CmdHF15View(const char *Cmd) {
         PrintAndLogEx(FAILED, "Memory image empty.");
         free(tag);
         return PM3_EINVARG;
+    }
+
+    // a .bin may hold an older struct revision, upgrade it before the checks below
+    res = convert_15_dump_format((uint8_t **)&tag, &bytes_read, true);
+    if (res != PM3_SUCCESS) {
+        free(tag);
+        return res;
     }
 
     if (bytes_read != sizeof(iso15_tag_t)) {

@@ -357,8 +357,13 @@ static void FpgaDownloadAndGoEx(int bitstream_target, bool keep_em) {
     LZ4_streamDecode_t lz4StreamDecode_body = {{ 0 }};
     compressed_fpga_stream.lz4StreamDecode = &lz4StreamDecode_body;
     uint8_t *output_buffer = BigBuf_calloc(FPGA_RING_BUFFER_BYTES);
+    if (output_buffer == NULL) {
+        Dbprintf(_RED_("Not enough memory to decompress FPGA image (%d bytes)"), FPGA_RING_BUFFER_BYTES);
+        return;
+    }
 
     if (reset_fpga_stream(bitstream_target, &compressed_fpga_stream, output_buffer) == false) {
+        Dbprintf(_RED_("reset_fpga_stream failed"));
         return;
     }
 
@@ -409,6 +414,6 @@ void FpgaResetBitstream(void) {
 //----------------------------------------------------------------------------
 // The information of the bitstream of the FPGA that has been downloaded currently.
 //----------------------------------------------------------------------------
-const char* FpgaGetCurrentVersionString(void) {
+const char *FpgaGetCurrentVersionString(void) {
     return g_fpga_version_information[bitstream_target_to_index(downloaded_bitstream)].versionString;
 }

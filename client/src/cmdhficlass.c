@@ -307,7 +307,7 @@ static void iclass_upload_emul(uint8_t *d, uint16_t n, uint16_t offset, uint16_t
     PrintAndLogEx(INFO, "." NOLF);
 
     while (bytes_remaining > 0) {
-        uint32_t bytes_in_packet = MIN(PM3_CMD_DATA_SIZE - 4, bytes_remaining);
+        uint32_t bytes_in_packet = MIN((uint32_t)(g_conn.max_cmd_data_size - 4), bytes_remaining);
         if (bytes_in_packet == bytes_remaining) {
             // Disable fast mode on last packet
             g_conn.block_after_ACK = false;
@@ -1140,9 +1140,15 @@ static int CmdHFiClassSim(const char *Cmd) {
             PrintAndLogEx(INFO, "Press " _GREEN_("<Enter>") " to abort");
             PacketResponseNG resp;
             clearCommandBuffer();
-            SendCommandMIX(CMD_HF_ICLASS_SIMULATE, sim_type, NUM_CSNS, 1, csns, NUM_CSNS * PICOPASS_BLOCK_SIZE);
+            uint8_t sbuf[sizeof(iclass_sim_t) + (NUM_CSNS * PICOPASS_BLOCK_SIZE)] = {0};
+            iclass_sim_t *spayload = (iclass_sim_t *)sbuf;
+            spayload->sim_type = sim_type;
+            spayload->num_csns = NUM_CSNS;
+            spayload->send_reply = 1;
+            memcpy(spayload->csns, csns, NUM_CSNS * PICOPASS_BLOCK_SIZE);
+            SendCommandNG(CMD_HF_ICLASS_SIMULATE, sbuf, sizeof(sbuf));
 
-            while (WaitForResponseTimeout(CMD_ACK, &resp, 2000) == false) {
+            while (WaitForResponseTimeout(CMD_HF_ICLASS_SIMULATE, &resp, 2000) == false) {
                 tries++;
                 if (kbd_enter_pressed()) {
                     PrintAndLogEx(WARNING, "\naborted via keyboard.");
@@ -1153,7 +1159,8 @@ static int CmdHFiClassSim(const char *Cmd) {
                     return PM3_ETIMEOUT;
                 }
             }
-            uint8_t num_mac  = resp.oldarg[1];
+            const iclass_sim_resp_t *sresp = (const iclass_sim_resp_t *)resp.data.asBytes;
+            uint8_t num_mac = (resp.length >= sizeof(iclass_sim_resp_t)) ? sresp->num_mac : 0;
             bool success = (NUM_CSNS == num_mac);
             PrintAndLogEx((success) ? SUCCESS : WARNING, "[%c] %d out of %d MAC obtained [%s]", (success) ? '+' : '!', num_mac, NUM_CSNS, (success) ? "OK" : "FAIL");
 
@@ -1174,9 +1181,9 @@ static int CmdHFiClassSim(const char *Cmd) {
                 //copy CSN
                 memcpy(dump + (i * MAC_ITEM_SIZE), csns + i * 8, 8);
                 //copy epurse
-                memcpy(dump + (i * MAC_ITEM_SIZE) + 8, resp.data.asBytes + i * 16, 8);
+                memcpy(dump + (i * MAC_ITEM_SIZE) + 8, sresp->mac + i * 16, 8);
                 // NR_MAC (eight bytes from the response)  ( 8b csn + 8b epurse == 16)
-                memcpy(dump + (i * MAC_ITEM_SIZE) + 16, resp.data.asBytes + i * 16 + 8, 8);
+                memcpy(dump + (i * MAC_ITEM_SIZE) + 16, sresp->mac + i * 16 + 8, 8);
             }
             /** Now, save to dumpfile **/
             saveFile("iclass_mac_attack", ".bin", dump, datalen);
@@ -1191,9 +1198,15 @@ static int CmdHFiClassSim(const char *Cmd) {
             PrintAndLogEx(INFO, "Press " _GREEN_("<Enter>") " to abort");
             PacketResponseNG resp;
             clearCommandBuffer();
-            SendCommandMIX(CMD_HF_ICLASS_SIMULATE, sim_type, NUM_CSNS, 1, csns, NUM_CSNS * PICOPASS_BLOCK_SIZE);
+            uint8_t sbuf[sizeof(iclass_sim_t) + (NUM_CSNS * PICOPASS_BLOCK_SIZE)] = {0};
+            iclass_sim_t *spayload = (iclass_sim_t *)sbuf;
+            spayload->sim_type = sim_type;
+            spayload->num_csns = NUM_CSNS;
+            spayload->send_reply = 1;
+            memcpy(spayload->csns, csns, NUM_CSNS * PICOPASS_BLOCK_SIZE);
+            SendCommandNG(CMD_HF_ICLASS_SIMULATE, sbuf, sizeof(sbuf));
 
-            while (WaitForResponseTimeout(CMD_ACK, &resp, 2000) == false) {
+            while (WaitForResponseTimeout(CMD_HF_ICLASS_SIMULATE, &resp, 2000) == false) {
                 tries++;
                 if (kbd_enter_pressed()) {
                     PrintAndLogEx(WARNING, "\naborted via keyboard.");
@@ -1204,7 +1217,8 @@ static int CmdHFiClassSim(const char *Cmd) {
                     return PM3_ETIMEOUT;
                 }
             }
-            uint8_t num_mac = resp.oldarg[1];
+            const iclass_sim_resp_t *sresp = (const iclass_sim_resp_t *)resp.data.asBytes;
+            uint8_t num_mac = (resp.length >= sizeof(iclass_sim_resp_t)) ? sresp->num_mac : 0;
             bool success = ((NUM_CSNS * 2) == num_mac);
             PrintAndLogEx((success) ? SUCCESS : WARNING, "[%c] %d out of %d MAC obtained [%s]", (success) ? '+' : '!', num_mac, NUM_CSNS * 2, (success) ? "OK" : "FAIL");
 
@@ -1225,9 +1239,9 @@ static int CmdHFiClassSim(const char *Cmd) {
                 // copy CSN
                 memcpy(dump + (i * MAC_ITEM_SIZE), csns + i * 8, 8); //CSN
                 // copy EPURSE
-                memcpy(dump + (i * MAC_ITEM_SIZE) + 8, resp.data.asBytes + i * 16, 8);
+                memcpy(dump + (i * MAC_ITEM_SIZE) + 8, sresp->mac + i * 16, 8);
                 // copy NR_MAC (eight bytes from the response)  ( 8b csn + 8b epurse == 16)
-                memcpy(dump + (i * MAC_ITEM_SIZE) + 16, resp.data.asBytes + i * 16 + 8, 8);
+                memcpy(dump + (i * MAC_ITEM_SIZE) + 16, sresp->mac + i * 16 + 8, 8);
             }
             saveFile("iclass_mac_attack_keyroll_A", ".bin", dump, datalen);
 
@@ -1238,9 +1252,9 @@ static int CmdHFiClassSim(const char *Cmd) {
                 // Copy CSN
                 memcpy(dump + (i * MAC_ITEM_SIZE), csns + i * 8, 8);
                 // copy EPURSE
-                memcpy(dump + (i * MAC_ITEM_SIZE) + 8, resp.data.asBytes + resp_index, 8);
+                memcpy(dump + (i * MAC_ITEM_SIZE) + 8, sresp->mac + resp_index, 8);
                 // copy NR_MAC (eight bytes from the response)  ( 8b csn + 8 epurse == 16)
-                memcpy(dump + (i * MAC_ITEM_SIZE) + 16, resp.data.asBytes + resp_index + 8, 8);
+                memcpy(dump + (i * MAC_ITEM_SIZE) + 16, sresp->mac + resp_index + 8, 8);
                 resp_index++;
             }
             saveFile("iclass_mac_attack_keyroll_B", ".bin", dump, datalen);
@@ -1260,7 +1274,13 @@ static int CmdHFiClassSim(const char *Cmd) {
             PrintAndLogEx(INFO, "Press " _GREEN_("`pm3 button`") " to abort");
             uint8_t numberOfCSNs = 0;
             clearCommandBuffer();
-            SendCommandMIX(CMD_HF_ICLASS_SIMULATE, sim_type, numberOfCSNs, 0, csn, 8);
+            uint8_t sbuf[sizeof(iclass_sim_t) + 8] = {0};
+            iclass_sim_t *spayload = (iclass_sim_t *)sbuf;
+            spayload->sim_type = sim_type;
+            spayload->num_csns = numberOfCSNs;
+            spayload->send_reply = 0;
+            memcpy(spayload->csns, csn, 8);
+            SendCommandNG(CMD_HF_ICLASS_SIMULATE, sbuf, sizeof(sbuf));
 
             if (sim_type == ICLASS_SIM_MODE_FULL || sim_type ==  ICLASS_SIM_MODE_FULL_GLITCH || sim_type ==  ICLASS_SIM_MODE_FULL_GLITCH_KEY)
                 PrintAndLogEx(HINT, "Hint: Try `" _YELLOW_("hf iclass esave -h") "` to save the emulator memory to file");
@@ -1609,11 +1629,17 @@ static int CmdHFiClassTagSim(const char *Cmd) {
     }
 
     clearCommandBuffer();
-    SendCommandMIX(CMD_HF_ICLASS_SIMULATE, ICLASS_SIM_MODE_FULL_LIVE, 0, 1, csn, 8);
+    uint8_t sbuf[sizeof(iclass_sim_t) + 8] = {0};
+    iclass_sim_t *spayload = (iclass_sim_t *)sbuf;
+    spayload->sim_type = ICLASS_SIM_MODE_FULL_LIVE;
+    spayload->num_csns = 0;
+    spayload->send_reply = 1;
+    memcpy(spayload->csns, csn, 8);
+    SendCommandNG(CMD_HF_ICLASS_SIMULATE, sbuf, sizeof(sbuf));
 
     PacketResponseNG resp;
     bool running = true;
-    bool arm_ended = false;  // true when ARM sent its own CMD_ACK (e.g. button press)
+    bool arm_ended = false;  // true when ARM sent its own reply (e.g. button press)
 
     // --- live FC/CN navigation (wiegand mode only; binary mode has no FC/CN to adjust)
     if (bin_len == 0) {
@@ -1623,7 +1649,7 @@ static int CmdHFiClassTagSim(const char *Cmd) {
 
         while (running) {
             // A non-zero-timeout poll lets us detect when the ARM ends the sim
-            if (WaitForResponseTimeout(CMD_ACK, &resp, 100)) {
+            if (WaitForResponseTimeout(CMD_HF_ICLASS_SIMULATE, &resp, 100)) {
                 arm_ended = true;
                 running = false;
                 break;
@@ -1734,7 +1760,7 @@ static int CmdHFiClassTagSim(const char *Cmd) {
         tagsim_rawmode_enter();
 
         while (running) {
-            if (WaitForResponseTimeout(CMD_ACK, &resp, 100)) {
+            if (WaitForResponseTimeout(CMD_HF_ICLASS_SIMULATE, &resp, 100)) {
                 arm_ended = true;
                 running = false;
                 break;
@@ -1750,10 +1776,10 @@ static int CmdHFiClassTagSim(const char *Cmd) {
 
     if (!arm_ended) {
         // Client exited the loop (Enter/Esc) but the ARM is still simulating.
-        // Tell it to stop and consume the resulting CMD_ACK so the ARM is
+        // Tell it to stop and consume the resulting reply so the ARM is
         // cleanly back in the main loop before we return.
         SendCommandNG(CMD_BREAK_LOOP, NULL, 0);
-        WaitForResponseTimeout(CMD_ACK, &resp, 2000);
+        WaitForResponseTimeout(CMD_HF_ICLASS_SIMULATE, &resp, 2000);
     }
 
     PrintAndLogEx(HINT, "Hint: Try `" _YELLOW_("hf iclass esave -h") "` to save the emulator memory to file");
@@ -1788,7 +1814,7 @@ int read_iclass_csn(bool loop, bool verbose, bool shallow_mod) {
         payload.flags |= FLAG_ICLASS_READER_SHALLOW_MOD;
     }
 
-    int res = PM3_SUCCESS;
+    int res = PM3_ETIMEOUT;
 
     do {
         clearCommandBuffer();
@@ -1797,14 +1823,19 @@ int read_iclass_csn(bool loop, bool verbose, bool shallow_mod) {
 
         if (WaitForResponseTimeout(CMD_HF_ICLASS_READER, &resp, 2000)) {
 
-            iclass_card_select_resp_t *r = (iclass_card_select_resp_t *)resp.data.asBytes;
-            if (loop) {
-                if (resp.status == PM3_ERFTRANS) {
+            if (resp.status == PM3_ERFTRANS || resp.length < sizeof(iclass_card_select_resp_t)) {
+                if (loop) {
                     continue;
                 }
-            } else {
+                if (verbose) PrintAndLogEx(WARNING, "iCLASS / Picopass card select failed ( %d )", resp.status);
+                res = PM3_EOPABORTED;
+                break;
+            }
 
-                if (r->status == FLAG_ICLASS_NULL || resp.status == PM3_ERFTRANS) {
+            iclass_card_select_resp_t *r = (iclass_card_select_resp_t *)resp.data.asBytes;
+            if (loop == false) {
+
+                if (r->status == FLAG_ICLASS_NULL) {
                     if (verbose) PrintAndLogEx(WARNING, "iCLASS / Picopass card select failed ( %d , %d)", r->status, resp.status);
                     res = PM3_EOPABORTED;
                     break;
@@ -1825,6 +1856,12 @@ int read_iclass_csn(bool loop, bool verbose, bool shallow_mod) {
                 iclass_set_last_known_card(card);
                 free(card);
                 res = PM3_SUCCESS;
+            }
+        } else {
+            if (verbose) PrintAndLogEx(WARNING, "iCLASS / Picopass card select timeout");
+            res = PM3_ETIMEOUT;
+            if (loop == false) {
+                break;
             }
         }
     } while (loop && (kbd_enter_pressed() == false));
@@ -3528,8 +3565,8 @@ static int CmdHFiClassRestore(const char *Cmd) {
 
     uint32_t payload_size = sizeof(iclass_restore_req_t) + (sizeof(iclass_restore_item_t) * (endblock - startblock + 1));
 
-    if (payload_size > PM3_CMD_DATA_SIZE) {
-        PrintAndLogEx(NORMAL, "Trying to write too many blocks at once.  Max: %d", PM3_CMD_DATA_SIZE / 8);
+    if (payload_size > g_conn.max_cmd_data_size) {
+        PrintAndLogEx(NORMAL, "Trying to write too many blocks at once.  Max: %d", g_conn.max_cmd_data_size / 8);
         return PM3_EINVARG;
     }
 
@@ -3956,7 +3993,7 @@ static int CmdHFiClass_TearBlock(const char *Cmd) {
         arg_lit0(NULL, "nr", "replay of NR/MAC"),
         arg_lit0("v", "verbose", "verbose output"),
         arg_lit0(NULL, "shallow", "use shallow (ASK) reader modulation instead of OOK"),
-        arg_int1("s", NULL, "<dec>", "tearoff delay start (in us) must be between 1 and 43000 (43ms). Precision is about 1/3 us"),
+        arg_int1("s", NULL, "<dec>", "tearoff delay start (in us) must be between 1 and 65535 (65ms). Precision is about 1/3 us"),
         arg_int0("i", NULL, "<dec>", "tearoff delay increment (in us) - default 10"),
         arg_int0("e", NULL, "<dec>", "tearoff delay end (in us) must be a higher value than the start delay"),
         arg_int0(NULL, "loop", "<dec>", "number of times to loop per tearoff time"),
@@ -4532,7 +4569,7 @@ static int CmdHFiClass_BlackTears(const char *Cmd) {
         arg_str0("k", "key", "<hex>", "Access key as 8 hex bytes"),
         arg_int0(NULL, "ki", "<dec>", "Key index to select key from memory 'hf iclass managekeys'"),
         arg_lit0(NULL, "credit", "key is assumed to be the credit key"),
-        arg_int0("s", NULL, "<dec>", "tearoff delay start (in us) must be between 1 and 43000 (43ms). Precision is about 1/3 us"),
+        arg_int0("s", NULL, "<dec>", "tearoff delay start (in us) must be between 1 and 65535 (65ms). Precision is about 1/3 us"),
         arg_int0("i", NULL, "<dec>", "tearoff delay increment (in us) - default 5"),
         arg_int0("e", NULL, "<dec>", "tearoff delay end (in us) must be a higher value than the start delay"),
         arg_str0("o", "otp", "<hex>", "Custom OTP value as 2 hex bytes"),
@@ -6028,8 +6065,8 @@ static int CmdHFiClassCheckKeys(const char *Cmd) {
 
     // USB_COMMAND.  512/4 = 103 mac
     uint32_t max_chunk_size = 0;
-    if (keycount > ((PM3_CMD_DATA_SIZE - sizeof(iclass_chk_t)) / 4))
-        max_chunk_size = (PM3_CMD_DATA_SIZE - sizeof(iclass_chk_t)) / 4;
+    if (keycount > ((g_conn.max_cmd_data_size - sizeof(iclass_chk_t)) / 4))
+        max_chunk_size = (g_conn.max_cmd_data_size - sizeof(iclass_chk_t)) / 4;
     else
         max_chunk_size = keycount;
 
@@ -7002,10 +7039,16 @@ static int CmdHFiClassLookUp(const char *Cmd) {
         // Device returns: epurse[8] + NR[4] + MAC_reader[4]
         PacketResponseNG resp;
         clearCommandBuffer();
-        SendCommandMIX(CMD_HF_ICLASS_SIMULATE, ICLASS_SIM_MODE_READER_ATTACK, 1, 1, csn, 8);
+        uint8_t sbuf[sizeof(iclass_sim_t) + 8] = {0};
+        iclass_sim_t *spayload = (iclass_sim_t *)sbuf;
+        spayload->sim_type = ICLASS_SIM_MODE_READER_ATTACK;
+        spayload->num_csns = 1;
+        spayload->send_reply = 1;
+        memcpy(spayload->csns, csn, 8);
+        SendCommandNG(CMD_HF_ICLASS_SIMULATE, sbuf, sizeof(sbuf));
 
         uint8_t tries = 0;
-        while (WaitForResponseTimeout(CMD_ACK, &resp, 2000) == false) {
+        while (WaitForResponseTimeout(CMD_HF_ICLASS_SIMULATE, &resp, 2000) == false) {
             tries++;
             if (kbd_enter_pressed()) {
                 PrintAndLogEx(WARNING, "\naborted via keyboard.");
@@ -7017,16 +7060,17 @@ static int CmdHFiClassLookUp(const char *Cmd) {
             }
         }
 
-        uint8_t num_mac = resp.oldarg[1];
+        const iclass_sim_resp_t *sresp = (const iclass_sim_resp_t *)resp.data.asBytes;
+        uint8_t num_mac = (resp.length >= sizeof(iclass_sim_resp_t)) ? sresp->num_mac : 0;
         if (num_mac == 0) {
             PrintAndLogEx(WARNING, "No CHECK command captured from reader");
             return PM3_ESOFT;
         }
 
         uint8_t cap_epurse[8], nr[4], mac_r[4];
-        memcpy(cap_epurse, resp.data.asBytes,      8);
-        memcpy(nr,         resp.data.asBytes + 8,  4);
-        memcpy(mac_r,      resp.data.asBytes + 12, 4);
+        memcpy(cap_epurse, sresp->mac,      8);
+        memcpy(nr,         sresp->mac + 8,  4);
+        memcpy(mac_r,      sresp->mac + 12, 4);
 
         PrintAndLogEx(SUCCESS, "Captured CHECK:");
         PrintAndLogEx(SUCCESS, "  ePurse.... %s", sprint_hex(cap_epurse, 8));
@@ -8026,14 +8070,17 @@ static int CmdHFiClassSAMExtract(const char *Cmd) {
     data[0] = flags;
 
     int cmdlen = 0;
-    if (CLIParamHexToBuf(arg_get_str(ctx, 8), data + 1, PM3_CMD_DATA_SIZE - 1, &cmdlen) != PM3_SUCCESS) {
+    if (CLIParamHexToBuf(arg_get_str(ctx, 8), data + 1, g_conn.max_cmd_data_size - 1, &cmdlen) != PM3_SUCCESS) {
         CLIParserFree(ctx);
         return PM3_ESOFT;
     }
 
     CLIParserFree(ctx);
 
-    if (IsHIDSamPresent(verbose) == false) {
+    // The ARM pings the SAM itself before anything else, so this costs a card
+    // reset and an ATR to learn what it is about to learn again. Only pay for
+    // it when the detail was asked for.
+    if (verbose && (IsHIDSamPresent(verbose) == false)) {
         return PM3_ESOFT;
     }
 
@@ -8131,14 +8178,31 @@ static int CmdHFiClassSAMExtract(const char *Cmd) {
             return res;
         }
 
-        const uint8_t *oid = pacs + 2 + pacs_length;
-        const uint8_t oid_length = oid[1];
-        const uint8_t *oid_data = oid + 2;
-        PrintAndLogEx(SUCCESS, "SIO OID.......... " _GREEN_("%s"), sprint_hex_inrow(oid_data, oid_length));
+        // The a0 element holds 80 (PACS) and optionally 81 (SIO OID) and 82
+        // (media type). An iCLASS SE credential often omits 81, so walk the
+        // nodes rather than assuming all three are present in order.
+        const uint8_t *p = pacs + 2 + pacs_length;
+        const uint8_t *end = d + 6 + d[5];
+        if (end > d + resp.length) {
+            end = d + resp.length;
+        }
 
-        const uint8_t *mediaType = oid + 2 + oid_length;
-        const uint8_t mediaType_data = mediaType[2];
-        PrintAndLogEx(SUCCESS, "SIO Media Type... " _GREEN_("%s"), getSioMediaTypeInfo(mediaType_data));
+        while (p + 1 < end) {
+
+            uint8_t tag = p[0];
+            uint8_t len = p[1];
+            if (p + 2 + len > end) {
+                break;
+            }
+
+            if (tag == 0x81) {
+                PrintAndLogEx(SUCCESS, "SIO OID.......... " _GREEN_("%s"), sprint_hex_inrow(p + 2, len));
+            } else if ((tag == 0x82) && (len >= 1)) {
+                PrintAndLogEx(SUCCESS, "SIO Media Type... " _GREEN_("%s"), getSioMediaTypeInfo(p[2]));
+            }
+
+            p += 2 + len;
+        }
     } else if (break_nrmac && d[0] == 0x05) {
         PrintAndLogEx(SUCCESS, "Nr-MAC........... " _GREEN_("%s"), sprint_hex_inrow(d + 1, 8));
         if (verbose) {

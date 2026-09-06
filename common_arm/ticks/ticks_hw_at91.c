@@ -20,10 +20,30 @@
 #include "proxmark3_arm.h"
 
 
+// Both delays below run on PWM channel 0 and wait the same way.
+//
+// The wait is on the wrapped difference from a starting count, not on
+// `now == end`. Equality only holds if the loop happens to sample that exact
+// value, so an interrupt or a slow read that steps the counter past it used to
+// cost a full 16 bit period before it came round again - 1.39 s at this
+// prescaler, 43.7 ms at the precision one. It also needed an `if (end == 0)
+// end++` guard that the difference form does not.
+//
+// The counter is 16 bit, so one comparison spans at most 65535 ticks. Longer
+// waits are walked in chunks, advancing `start` by exactly the chunk that
+// elapsed so they join without drift; chunks are capped at half a period to
+// keep the unsigned difference unambiguous. The tick count used to be
+// truncated into a uint16, which silently returned early: a requested 60 ms
+// delay measured 17.5 ms on an RDV4, and `hw tearoff --delay` accepts values
+// right across that boundary.
+//
+// Keep this inline. Splitting the arming and the wait into helpers broke the
+// SIM module link outright - `smart info` could not read the module version -
+// with arithmetic that is otherwise identical.
+
 // timer counts in 21.3us increments (1024/48MHz), rounding applies
-// WARNING: timer can't measure more than 1.39s (21.3us * 0xffff)
 void SpinDelayUs(int us) {
-    int ticks = ((MCK / 1000000) * us + 512) >> 10;
+    uint32_t ticks = (us > 0) ? ((((uint32_t)(MCK / 1000000) * (uint32_t)us) + 512) >> 10) : 0;
 
     // Borrow a PWM unit for my real-time clock
     AT91C_BASE_PWMC->PWMC_ENA = PWM_CHANNEL(0);
@@ -33,19 +53,15 @@ void SpinDelayUs(int us) {
     AT91C_BASE_PWMC_CH0->PWMC_CDTYR = 0;                            // Channel Duty Cycle Register
     AT91C_BASE_PWMC_CH0->PWMC_CPRDR = 0xffff;                       // Channel Period Register
 
-    uint16_t end = AT91C_BASE_PWMC_CH0->PWMC_CCNTR + ticks;
-    if (end == 0) { // AT91C_BASE_PWMC_CH0->PWMC_CCNTR is never == 0
-        end++;      // so we have to end++ to avoid inivity loop
-    }
-
-    for (;;) {
-        uint16_t now = AT91C_BASE_PWMC_CH0->PWMC_CCNTR;
-
-        if (now == end) {
-            return;
+    uint32_t remaining = (uint32_t)ticks;
+    uint16_t start = AT91C_BASE_PWMC_CH0->PWMC_CCNTR;
+    while (remaining) {
+        uint16_t chunk = (remaining > 0x8000UL) ? 0x8000U : (uint16_t)remaining;
+        while ((uint16_t)(AT91C_BASE_PWMC_CH0->PWMC_CCNTR - start) < chunk) {
+            WDT_HIT();
         }
-
-        WDT_HIT();
+        start = (uint16_t)(start + chunk);
+        remaining -= chunk;
     }
 }
 
@@ -54,7 +70,7 @@ void SpinDelayUs(int us) {
 // timer counts in 666ns increments (32/48MHz), rounding applies
 // WARNING: timer can't measure more than 43ms (666ns * 0xFFFF)
 void SpinDelayUsPrecision(int us) {
-    int ticks = ((MCK / 1000000) * us + 16) >> 5;
+    uint32_t ticks = (us > 0) ? ((((uint32_t)(MCK / 1000000) * (uint32_t)us) + 16) >> 5) : 0;
 
     // Borrow a PWM unit for my real-time clock
     AT91C_BASE_PWMC->PWMC_ENA = PWM_CHANNEL(0);
@@ -64,19 +80,15 @@ void SpinDelayUsPrecision(int us) {
     AT91C_BASE_PWMC_CH0->PWMC_CDTYR = 0;                           // Channel Duty Cycle Register
     AT91C_BASE_PWMC_CH0->PWMC_CPRDR = 0xFFFF;                      // Channel Period Register
 
-    uint16_t end = AT91C_BASE_PWMC_CH0->PWMC_CCNTR + ticks;
-    if (end == 0) { // AT91C_BASE_PWMC_CH0->PWMC_CCNTR is never == 0
-        end++;      // so we have to end++ to avoid inivity loop
-    }
-
-    for (;;) {
-        uint16_t now = AT91C_BASE_PWMC_CH0->PWMC_CCNTR;
-
-        if (now == end) {
-            return;
+    uint32_t remaining = (uint32_t)ticks;
+    uint16_t start = AT91C_BASE_PWMC_CH0->PWMC_CCNTR;
+    while (remaining) {
+        uint16_t chunk = (remaining > 0x8000UL) ? 0x8000U : (uint16_t)remaining;
+        while ((uint16_t)(AT91C_BASE_PWMC_CH0->PWMC_CCNTR - start) < chunk) {
+            WDT_HIT();
         }
-
-        WDT_HIT();
+        start = (uint16_t)(start + chunk);
+        remaining -= chunk;
     }
 }
 
@@ -208,6 +220,31 @@ uint32_t RAMFUNC GetCountSspClk(void) {
 // TC2 overflow count, combined with the TC2 counter for ~47 min timing.
 static uint16_t timestamp_high = 0;
 
+
+// Wait for a software trigger to take effect, without ever spinning on an exact
+// value.
+//
+// TC_CV restarts on the next TIMER_CLOCK3 edge, 32 MCK cycles away, and reading
+// a timer register costs a good fraction of that.  A loop that waits for exactly
+// 0 can therefore step straight over the window, and the counter then has to run
+// all the way round its 16 bits - 43.7 ms - before zero comes past again.  In
+// ResetPrecisionCounter(), which the Hitag reader calls once per transmitted
+// bit, that turns into a stall long enough that the Proxmark stops answering USB
+// and looks like it has hung.  Accept any value that is plainly post-reset, and
+// give up rather than wait forever.
+#define TC_WAIT_RESTART(tc)                        \
+    do {                                           \
+        for (uint32_t _i = 0; _i < 256; _i++) {    \
+            if ((tc)->TC_CV < 4) {                 \
+                break;                             \
+            }                                      \
+        }                                          \
+    } while (0)
+
+// Reference the plain GetPrecisionCounter() measures from.  See ticks_apis.h:
+// this moves, the hardware counter does not.
+static uint16_t precision_ref = 0;
+
 void StartPrecisionCounter(void) {
     // Enable peripheral clock for TC0 (precision counter).
     AT91C_BASE_PMC->PMC_PCER |= (1 << AT91C_ID_TC0);
@@ -218,7 +255,8 @@ void StartPrecisionCounter(void) {
     // TC0: capture mode, default timer source = MCK/32 (TIMER_CLOCK3), no triggers (free-running).
     AT91C_BASE_TC0->TC_CMR = AT91C_TC_CLKS_TIMER_DIV3_CLOCK;
     AT91C_BASE_TC0->TC_CCR = AT91C_TC_CLKEN | AT91C_TC_SWTRG;
-    while (AT91C_BASE_TC0->TC_CV != 0) {};  // wait until the reset takes effect
+    TC_WAIT_RESTART(AT91C_BASE_TC0);  // wait until the reset takes effect
+    precision_ref = 0;
 }
 
 void StopPrecisionCounter(void) {
@@ -226,12 +264,19 @@ void StopPrecisionCounter(void) {
 }
 
 void ResetPrecisionCounter(void) {
-    AT91C_BASE_TC0->TC_CCR = AT91C_TC_SWTRG;
-    while (AT91C_BASE_TC0->TC_CV != 0) {};
+    precision_ref = (uint16_t)AT91C_BASE_TC0->TC_CV;
 }
 
 uint16_t RAMFUNC GetPrecisionCounter(void) {
+    return (uint16_t)(AT91C_BASE_TC0->TC_CV - precision_ref);
+}
+
+uint16_t RAMFUNC GetPrecisionCounterRaw(void) {
     return (uint16_t)AT91C_BASE_TC0->TC_CV;
+}
+
+uint16_t RAMFUNC GetPrecisionCounterDelta(uint16_t start) {
+    return (uint16_t)(AT91C_BASE_TC0->TC_CV - start);
 }
 
 void StartLoEdgeCapture(void) {
@@ -252,7 +297,7 @@ void StartLoEdgeCapture(void) {
                              | AT91C_TC_LDRA_RISING          // load RA on rising edge of TIOA
                              | AT91C_TC_LDRB_FALLING;        // load RB on falling edge of TIOA
     AT91C_BASE_TC1->TC_CCR = AT91C_TC_CLKEN | AT91C_TC_SWTRG;
-    while (AT91C_BASE_TC1->TC_CV != 0) {};  // wait until the reset takes effect
+    TC_WAIT_RESTART(AT91C_BASE_TC1);  // wait until the reset takes effect
 }
 
 void StopLoEdgeCapture(void) {
@@ -301,9 +346,17 @@ void StartTimestamp(void) {
     // TC2: capture mode, default timer source = MCK/32 (TIMER_CLOCK3), no triggers (free-running).
     AT91C_BASE_TC2->TC_CMR = AT91C_TC_CLKS_TIMER_DIV3_CLOCK;
     AT91C_BASE_TC2->TC_CCR = AT91C_TC_CLKEN | AT91C_TC_SWTRG;
-    while (AT91C_BASE_TC2->TC_CV != 0) {};  // wait until the reset takes effect
+    TC_WAIT_RESTART(AT91C_BASE_TC2);  // wait until the reset takes effect
 
-    // Reset the overflow accumulator.
+    // Reset the overflow accumulator, and the hardware flag it counts.
+    //
+    // Reading TC_SR is what clears COVFS.  Without this, an overflow left over
+    // from a previous run is still pending, so the very first GetTimestamp()
+    // counts it and every timestamp for the rest of the session is 65536 ticks -
+    // 5461 T0 - too high.  It shows up in a trace as a frame whose end is exactly
+    // start + 65536, followed by rows with negative looking start times where the
+    // client subtracts the inflated value.
+    (void)AT91C_BASE_TC2->TC_SR;
     timestamp_high = 0;
 }
 
@@ -312,11 +365,30 @@ void StopTimestamp(void) {
 }
 
 uint32_t RAMFUNC GetTimestamp(void) {
-    // Reading TC_SR clears the COVFS overflow flag.
-    if (AT91C_BASE_TC2->TC_SR & AT91C_TC_COVFS) {
+    // Read the counter on both sides of the overflow check.
+    //
+    // TC2 is 16 bits at MCK/32, so it wraps every 43.7 ms, and reading TC_SR is
+    // what latches that wrap into timestamp_high - and clears the flag, so it may
+    // only be read once.  Checking the flag first and reading TC_CV afterwards
+    // leaves a window: a wrap landing between the two reads is not seen, the low
+    // half has already restarted near zero, and the result comes back 65536 ticks
+    // (5461 T0) BELOW the previous one.  Timestamps that go backwards break every
+    // caller that measures with an unsigned difference; the Hitag 2 simulator's
+    // turnaround, `while ((TIMESTAMP - rx_end) < ...)`, wraps to a huge value and
+    // stops waiting at once, putting the answer on the air a full frame early.
+    //
+    // Sampling either side of the flag read closes it: if the flag is set the
+    // wrap is at or before the flag read, so the second sample is the one that
+    // belongs with the incremented high half.
+    uint16_t cv_before = (uint16_t)AT91C_BASE_TC2->TC_CV;
+    bool overflowed = (AT91C_BASE_TC2->TC_SR & AT91C_TC_COVFS) != 0;
+    uint16_t cv_after = (uint16_t)AT91C_BASE_TC2->TC_CV;
+
+    if (overflowed) {
         timestamp_high++;
+        cv_before = cv_after;
     }
-    return (((uint32_t)timestamp_high << 16) + AT91C_BASE_TC2->TC_CV) / TICKS_PER_CARRIER_PERIOD;
+    return (((uint32_t)timestamp_high << 16) + cv_before) / TICKS_PER_CARRIER_PERIOD;
 }
 
 #endif // #ifndef AS_BOOTROM
@@ -413,7 +485,23 @@ void ResetTicks(void) {
 void StopTicks(void) {
     AT91C_BASE_TC0->TC_CCR = AT91C_TC_CLKDIS;
     AT91C_BASE_TC1->TC_CCR = AT91C_TC_CLKDIS;
-    AT91C_BASE_TC2->TC_CCR = AT91C_TC_CLKDIS; // TODO StartTicks() did not use TC2, is this code worthless?
+    AT91C_BASE_TC2->TC_CCR = AT91C_TC_CLKDIS;
+
+    // TODO DXL StartTicks() did not use TC2, is this code worthless?
+    //  In some places, StartCountSspClk() is called after StopTicks(), so it seems necessary to disable timers completely.
+    //  In that case, the role of StopTicks() is not limited to being paired with StartTicks(),
+    //  but is a general release function for all ticks modules.
+    //  ---
+    //  Do we need to provide a StopXXX for each StartXXXX?
+    //  Such as:
+    //    * StartTicks -> StopTicks
+    //    * StartCountSspClk -> StopCountSspClk
+    //    * StartTickCount -> StopTickCount
+    //    * StartCountUS -> StopCountUS
+    //    * StartPrecisionCounter -> StopPrecisionCounter
+    //    * StartLoEdgeCapture -> StopLoEdgeCapture
+    //    * StartTimestamp -> StopTimestamp
+    //  It seems best for everyone(api) to do their own job.
 }
 
 uint32_t GetTicks(void) {

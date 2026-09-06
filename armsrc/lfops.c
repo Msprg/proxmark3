@@ -288,7 +288,7 @@ void printT55xxConfig(void) {
     DbpString("");
 }
 
-void setT55xxConfig(uint8_t arg0, const t55xx_configurations_t *c) {
+void setT55xxConfig(uint8_t persist, const t55xx_configurations_t *c) {
     for (uint8_t i = 0; i < 4; i++) {
         if (c->m[i].start_gap != 0)
             T55xx_Timing.m[i].start_gap = c->m[i].start_gap;
@@ -321,7 +321,7 @@ void setT55xxConfig(uint8_t arg0, const t55xx_configurations_t *c) {
 
 #ifdef WITH_FLASH
     // shall persist to flashmem
-    if (arg0 == 0) {
+    if (persist == 0) {
         BigBuf_free();
         return;
     }
@@ -936,10 +936,6 @@ void SimulateTagLowFrequency(int period, int gap, bool ledcontrol) {
     SimulateTagLowFrequencyEx(period, gap, ledcontrol, -1);
 }
 
-
-#define DEBUG_FRAME_CONTENTS 1
-void SimulateTagLowFrequencyBidir(int divisor, int max_bitlen) {
-}
 
 // compose fc/X fc/Y waveform (FSKx)
 static void fcAll(uint8_t fc, int *n, uint8_t clock, int16_t *remainder) {

@@ -30,6 +30,10 @@ ifeq ($(PLATFORM),PM3ICOPYX)
   INCLUDES += -DICOPYX
 endif
 
+ifeq ($(PLATFORM),PM5)
+  INCLUDES += -DDEFAULT_PM5
+endif
+
 INSTALLBIN = proxmark3
 INSTALLSHARE = cmdscripts lualibs luascripts pyscripts resources dictionaries
 
@@ -869,6 +873,7 @@ SRCS =  mifare/aiddesfire.c \
         graph.c \
         hidsio.c \
         jansson_path.c \
+        jsonutils.c \
         iso4217.c \
         iso7816/apduinfo.c \
         iso7816/iso7816core.c \
@@ -907,6 +912,7 @@ SRCS =  mifare/aiddesfire.c \
         pm3_fit.c \
         preferences.c \
         pm3line.c \
+        pm3line_vocabulary.c \
         proxmark3.c \
         scandir.c \
         relay/relay_posix.c \
@@ -914,6 +920,7 @@ SRCS =  mifare/aiddesfire.c \
         uart/ringbuffer.c \
         uart/uart_common.c \
         uart/uart_posix.c \
+        uart/ble_posix.c \
         uart/uart_win32.c \
         scripting.c \
         ui.c \

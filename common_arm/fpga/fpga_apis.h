@@ -107,6 +107,22 @@
 #define FPGA_LF_EDGE_DETECT_READER_FIELD            ( 1 )
 #define FPGA_LF_EDGE_DETECT_TOGGLE_MODE             ( 2 )
 
+// Modulate the coil on the 10k leg alone instead of the 33 Ohm one, for a
+// shallower tag answer.  Understood by LF_EDGE_DETECT and LF_ADC.
+#define FPGA_LF_WEAK_LOAD                           ( 4 )
+
+// Hold the envelope follower while the tag simulator is modulating, so its own
+// answer does not drag the slicing levels away from the reader's signal.
+#define FPGA_LF_EDGE_DETECT_HOLD_TRACKER            ( 8 )
+
+// Let the edge detector keep working on a small tracked span, so a reader frame
+// riding on a recovering envelope is still sliced instead of being ignored.
+#define FPGA_LF_EDGE_DETECT_SENSITIVE               ( 16 )
+
+// Detect edges from the slope of the signal rather than from a level, so a frame
+// riding on a recovering envelope is still resolved.
+#define FPGA_LF_EDGE_DETECT_SLOPE                   ( 32 )
+
 // Options for the generic HF reader
 #define FPGA_HF_READER_MODE_RECEIVE_IQ              ( 0 )
 #define FPGA_HF_READER_MODE_RECEIVE_AMPLITUDE       ( 1 )
@@ -142,6 +158,7 @@
 #define FPGA_HF_ISO18092_FLAG_NOMOD                 ( 1 ) // 0001 disable modulation module
 #define FPGA_HF_ISO18092_FLAG_424K                  ( 2 ) // 0010 should enable 414k mode (untested). No autodetect
 #define FPGA_HF_ISO18092_FLAG_READER                ( 4 ) // 0100 enables antenna power, to act as a reader instead of tag
+#define FPGA_HF_ISO18092_FLAG_PROBE                 ( 8 ) // 1000 signal probe: stream envelope peak-to-peak instead of demodulated bits
 
 // Options for adc mux.
 // The mux is no longer set directly through the GPIO PIN to solve the problem of high coupling with the platform.
@@ -202,7 +219,7 @@ STATIC_FORCE_INLINE void FPGA_SSC_DMA_RX_Enable(void);
 
 // The buf address currently receiving and storing data (not the address of data that has already been received)
 // |done|done|done|working|  <- you will get 'working' address.
-STATIC_FORCE_INLINE uint32_t* FPGA_SSC_DMA_RX_Current_Address(void);
+STATIC_FORCE_INLINE uint32_t *FPGA_SSC_DMA_RX_Current_Address(void);
 
 // How much data still needs to be received?
 // After receiving an item each time, subtract 1 from this value.

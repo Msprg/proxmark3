@@ -313,6 +313,7 @@ set (TARGET_SOURCES
         ${PM3_ROOT}/client/src/uart/ringbuffer.c
         ${PM3_ROOT}/client/src/uart/uart_common.c
         ${PM3_ROOT}/client/src/uart/uart_posix.c
+        ${PM3_ROOT}/client/src/uart/ble_posix.c
         ${PM3_ROOT}/client/src/uart/uart_win32.c
         ${PM3_ROOT}/client/src/ui/overlays.ui
         ${PM3_ROOT}/client/src/ui/image.ui
@@ -422,6 +423,7 @@ set (TARGET_SOURCES
         ${PM3_ROOT}/client/src/hidsio.c
         ${PM3_ROOT}/client/src/iso4217.c
         ${PM3_ROOT}/client/src/jansson_path.c
+        ${PM3_ROOT}/client/src/jsonutils.c
         ${PM3_ROOT}/client/src/lua_bitlib.c
         ${PM3_ROOT}/client/src/parsers/parsehrt.c
         ${PM3_ROOT}/client/src/parsers/hrtparser/hrtparser.c
@@ -433,6 +435,7 @@ set (TARGET_SOURCES
         ${PM3_ROOT}/client/src/pm3_dsp.c
         ${PM3_ROOT}/client/src/pm3_fit.c
         ${PM3_ROOT}/client/src/pm3line.c
+        ${PM3_ROOT}/client/src/pm3line_vocabulary.c
         ${PM3_ROOT}/client/src/scandir.c
         ${PM3_ROOT}/client/src/scripting.c
         ${PM3_ROOT}/client/src/ui.c

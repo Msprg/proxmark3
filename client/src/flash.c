@@ -288,7 +288,7 @@ static int check_segs(flash_file_t *ctx, int can_write_bl, flash_dev_t *flash_de
 static int print_and_validate_version(flash_file_t *ctx) {
     if (!CheckValidInformationMagic(ctx->ver_info)) {
         PrintAndLogEx(ERR, _RED_("ELF file does not contain valid version information"
-                           "(magic = 0x%08x)"), ctx->ver_info->magic);
+                                 "(magic = 0x%08x)"), ctx->ver_info->magic);
         return PM3_EFILE;
     }
 
@@ -483,6 +483,7 @@ static int get_proxmark_state(uint32_t *state) {
             break;
         }
         case CMD_DEVICE_INFO: {
+            // bootloader replies are OLD frames by design, see doc/new_frame_format.md
             *state = resp.oldarg[0];
             break;
         }
@@ -558,10 +559,18 @@ static int wait_for_ack(PacketResponseNG *ack) {
 }
 
 // If the BOOTLOADER is too old or damaged, we can suggest that the user update the BOOT.
-static void flash_suggest_update_bootloader(void) {
+// If the current session is already (re)flashing the bootloader (--unlock-bootloader), there is
+// nothing more to suggest: the fix is already under way.
+static void flash_suggest_update_bootloader(bool bootloader_being_flashed) {
     // Since it's only used internally, we can define it internally.
     static bool gs_printed_msg = false;
     if (gs_printed_msg) {
+        return;
+    }
+
+    if (bootloader_being_flashed) {
+        PrintAndLogEx(WARNING, _YELLOW_("Your bootloader is outdated, but this operation will update it"));
+        gs_printed_msg = true;
         return;
     }
 
@@ -607,7 +616,7 @@ static void flash_dev_at32_init(uint32_t chipinfo, flash_dev_t *flash_dev) {
 
 // AT91 series has some variations in flash size, so we check the chipinfo to set the flash end address
 // and warn the user if they have a large flash but an old bootloader that doesn't support it.
-static void flash_dev_at91_init(uint32_t chipinfo, flash_dev_t *flash_dev, int version) {
+static void flash_dev_at91_init(uint32_t chipinfo, flash_dev_t *flash_dev, int version, bool bl_targeted) {
     flash_dev->block_size = BLOCK_SIZE_AT91;
     flash_dev->flash_start = FLASH_START_AT91;
     flash_dev->flash_end = FLASH_START_AT91 + AT91C_IFLASH_PAGE_SIZE * AT91C_IFLASH_NB_OF_PAGES / 2; // Default 256K MAX
@@ -621,7 +630,7 @@ static void flash_dev_at91_init(uint32_t chipinfo, flash_dev_t *flash_dev, int v
             if (BL_VERSION_MAJOR(version) < BL_VERSION_MAJOR(BL_VERSION_1_0_0)) {
                 PrintAndLogEx(ERR, _RED_("====================== OBS ! ======================"));
                 PrintAndLogEx(ERR, _RED_("Your bootloader does not support writing above 256k"));
-                flash_suggest_update_bootloader();
+                flash_suggest_update_bootloader(bl_targeted);
             } else {
                 // The capacity of the main chip of the device is greater than 256K,
                 // and BL also supports OTA for chips with such a large capacity.
@@ -632,8 +641,25 @@ static void flash_dev_at91_init(uint32_t chipinfo, flash_dev_t *flash_dev, int v
         PrintAndLogEx(INFO, "Available memory on this board: "_RED_("UNKNOWN")"\n");
         PrintAndLogEx(ERR, _RED_("====================== OBS ! ======================================"));
         PrintAndLogEx(ERR, _RED_("Note: Your bootloader does not understand the new" _YELLOW_(" CHIP_INFO") _RED_(" command")));
-        flash_suggest_update_bootloader();
+        flash_suggest_update_bootloader(bl_targeted);
     }
+}
+
+// True if at least one loaded ELF file has a PHDR matching the bootrom start address,
+// i.e. this operation actually writes bootloader code (as opposed to merely being allowed to via --unlock-bootloader).
+static bool files_target_bootloader(flash_file_t *files, uint8_t num_files, uint32_t boot_start) {
+    for (uint8_t f = 0; f < num_files; f++) {
+        Elf32_Phdr_t *phdr = files[f].phdrs;
+        for (uint16_t i = 0; i < files[f].num_phdrs; i++, phdr++) {
+            if (le32(phdr->p_type) != PT_LOAD || !le32(phdr->p_filesz)) {
+                continue;
+            }
+            if (le32(phdr->p_paddr) == boot_start) {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 // Sending simple cmd without any parameters or data payload, just for arg0.
@@ -645,7 +671,7 @@ static void send_cmd_for_arg0(const uint64_t cmd, uint32_t *arg0) {
 }
 
 // Go into flashing mode
-int flash_start_flashing(int enable_bl_writes, char *serial_port_name, flash_dev_t *flash_dev) {
+int flash_start_flashing(int enable_bl_writes, char *serial_port_name, flash_dev_t *flash_dev, flash_file_t *files, uint8_t num_files) {
 
     int ret = enter_bootloader(serial_port_name, true);
     if (ret != PM3_SUCCESS) {
@@ -668,6 +694,11 @@ int flash_start_flashing(int enable_bl_writes, char *serial_port_name, flash_dev
         send_cmd_for_arg0(CMD_CHIP_INFO, &chipinfo);
     }
 
+    // --unlock-bootloader only permits bootloader writes, it doesn't mean the loaded files actually contain one,
+    // so derive the real intent from the PHDR address ranges of the files being flashed.
+    uint32_t boot_start_guess = (flash_dev->chiptype == MAIN_CHIP_TYPE_AT32) ? FLASH_START_AT32 : FLASH_START_AT91;
+    bool bl_targeted = files_target_bootloader(files, num_files, boot_start_guess);
+
     int version = BL_VERSION_INVALID;
     if ((state & DEVICE_INFO_FLAG_UNDERSTANDS_VERSION) == DEVICE_INFO_FLAG_UNDERSTANDS_VERSION) {
         // Get bootrom version for features and sanity checks
@@ -677,11 +708,11 @@ int flash_start_flashing(int enable_bl_writes, char *serial_port_name, flash_dev
             version = BL_VERSION_INVALID; // version info seems fishy
             PrintAndLogEx(ERR, _RED_("====================== OBS ! ==========================="));
             PrintAndLogEx(ERR, _RED_("Note: Your bootloader reported an invalid version number"));
-            flash_suggest_update_bootloader();
+            flash_suggest_update_bootloader(bl_targeted);
         } else if (BL_VERSION_MAJOR(version) < BL_VERSION_MAJOR(FLASHER_VERSION)) {
             PrintAndLogEx(ERR, _RED_("====================== OBS ! ==================================="));
             PrintAndLogEx(ERR, _RED_("Note: Your bootloader reported a version older than this flasher"));
-            flash_suggest_update_bootloader();
+            flash_suggest_update_bootloader(bl_targeted);
         } else if (BL_VERSION_MAJOR(version) > BL_VERSION_MAJOR(FLASHER_VERSION)) {
             PrintAndLogEx(ERR, _RED_("====================== OBS ! ========================="));
             PrintAndLogEx(ERR, _RED_("Note: Your bootloader is more recent than this flasher"));
@@ -690,7 +721,7 @@ int flash_start_flashing(int enable_bl_writes, char *serial_port_name, flash_dev
     } else {
         PrintAndLogEx(ERR, _RED_("====================== OBS ! ==========================================="));
         PrintAndLogEx(ERR, _RED_("Note: Your bootloader does not understand the new" _YELLOW_(" CMD_BL_VERSION") _RED_(" command")));
-        flash_suggest_update_bootloader();
+        flash_suggest_update_bootloader(bl_targeted);
     }
 
     // 1. The old bootloader does not support pm5, nor does it support the 'CMD_CHIP_TYPE' command.
@@ -701,12 +732,12 @@ int flash_start_flashing(int enable_bl_writes, char *serial_port_name, flash_dev
         case MAIN_CHIP_TYPE_NONE:
             PrintAndLogEx(ERR, _RED_("Bootloader does not support CMD_CHIP_TYPE, assuming AT91 platform"));
             flash_dev->chiptype = MAIN_CHIP_TYPE_AT91;
-            flash_suggest_update_bootloader();
-            // break; -> Don't break !!! We want to execute the code for MAIN_CHIP_TYPE_AT91 as well to initialize flash_dev with correct values.
+            flash_suggest_update_bootloader(bl_targeted);
+        // break; -> Don't break !!! We want to execute the code for MAIN_CHIP_TYPE_AT91 as well to initialize flash_dev with correct values.
 
         case MAIN_CHIP_TYPE_AT91:
         default:
-            flash_dev_at91_init(chipinfo, flash_dev, version);
+            flash_dev_at91_init(chipinfo, flash_dev, version, bl_targeted);
             break;
 
         case MAIN_CHIP_TYPE_AT32:
@@ -729,7 +760,7 @@ int flash_start_flashing(int enable_bl_writes, char *serial_port_name, flash_dev
     } else {
         PrintAndLogEx(ERR, _RED_("====================== OBS ! ========================================"));
         PrintAndLogEx(ERR, _RED_("Note: Your bootloader does not understand the new" _YELLOW_(" START_FLASH") _RED_(" command")));
-        flash_suggest_update_bootloader();
+        flash_suggest_update_bootloader(bl_targeted);
     }
     return PM3_SUCCESS;
 }
@@ -802,17 +833,17 @@ static void flash_write_err_software(int pm3_err) {
 }
 
 // Send finish write cmd and waiting for response.
-// The send_buf length is always 512byte(PM3_CMD_DATA_SIZE)
+// The send_buf length is always 512byte(PM3_CMD_DATA_SIZE_OLD)
 static int send_finish_write_cmd(uint32_t address, int magic, uint8_t *send_buf, PacketResponseNG *resp) {
-    // The sending length is always PM3_CMD_DATA_SIZE, which is 512 bytes, because of the limitation of the old frame.
-    const int send_len = PM3_CMD_DATA_SIZE;
+    // The sending length is always PM3_CMD_DATA_SIZE_OLD, which is 512 bytes, because of the limitation of the old frame.
+    const int send_len = PM3_CMD_DATA_SIZE_OLD;
 #if defined ICOPYX
     // To prevent users from flashing unsupported firmware, icopyx checks arg1 and arg2 in this command.
     // Therefore, when sending magic to the device, we should not choose a value that happens to be the same as icopyx.
     // In fact, neither PM3V nor PM5V will be 0xff or 0x1fd, so this should have strong robustness.
     SendCommandBL(CMD_FINISH_WRITE, address, 0xff, 0x1fd, send_buf, send_len);
 #else
-    // If it's an older version of the flashher or a flashher specific to icopyx, then arg1 should be 0x00 or 0xff,
+    // If it's an older version of the flasher or a flasher specific to icopyx, then arg1 should be 0x00 or 0xff,
     //  not a valid magic value. The client is specifically designed for icopyx.
     // ---
     // For devices with older firmware, it doesn't care about arg1,
@@ -836,14 +867,14 @@ static int send_finish_write_cmd(uint32_t address, int magic, uint8_t *send_buf,
 // Write a block of data to flash, padding to the block size if needed. The bootloader will read the entire block,
 // so we need to make sure to pad it with 0xFF if the data is smaller than the block size.
 static int write_block(uint32_t address, int magic, uint8_t *data, uint32_t length, flash_dev_t *flash_dev) {
-    // Align length to PM3_CMD_DATA_SIZE or block_size
+    // Align length to PM3_CMD_DATA_SIZE_OLD or block_size
     // It is necessary to align with the minimum write unit of the target chip,
     // otherwise it may cause the device to lose the data or offset errors.
-    uint32_t padded_len = length % MAX(PM3_CMD_DATA_SIZE, flash_dev->block_size);
+    uint32_t padded_len = length % MAX(PM3_CMD_DATA_SIZE_OLD, flash_dev->block_size);
     if (padded_len) {
-        padded_len = MAX(PM3_CMD_DATA_SIZE, flash_dev->block_size) - padded_len;
+        padded_len = MAX(PM3_CMD_DATA_SIZE_OLD, flash_dev->block_size) - padded_len;
     }
-    // After aligning PM3_CMD_DATA_SIZE, allocate a new buffer, copy the data, and pad the end with 0xFF.
+    // After aligning PM3_CMD_DATA_SIZE_OLD, allocate a new buffer, copy the data, and pad the end with 0xFF.
     uint32_t aligned_len = length + padded_len;
     uint8_t *block_buf = malloc(aligned_len);
     if (block_buf == NULL) {
@@ -873,7 +904,7 @@ static int write_block(uint32_t address, int magic, uint8_t *data, uint32_t leng
             }
             break;
         }
-        sent += PM3_CMD_DATA_SIZE;
+        sent += PM3_CMD_DATA_SIZE_OLD;
     }
     free(block_buf); // remember to free buffer
     return ret;

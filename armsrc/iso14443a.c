@@ -314,6 +314,12 @@ uint32_t iso14a_get_timeout(void) {
     return iso14a_timeout - (DELAY_AIR2ARM_AS_READER + DELAY_ARM2AIR_AS_READER) / 128 - 2;
 }
 
+void iso14a_rebase_transfer_time(void) {
+    //Restarting StartCountSspClk() resets NextTransferTime clock-counts to zero; retaining old value makes ReaderTransmit() wait stale time from previous APDU.
+    //Do not reset PCB or ATS state here.
+    NextTransferTime = 2 * DELAY_ARM2AIR_AS_READER;
+}
+
 //-----------------------------------------------------------------------------
 // Generate the parity value for a byte sequence
 //-----------------------------------------------------------------------------
@@ -804,7 +810,7 @@ static int ManchesterDecoding_Thinfilm(uint8_t bit) {
 // near the reader.
 // "hf 14a sniff"
 //-----------------------------------------------------------------------------
-void RAMFUNC SniffIso14443a(uint8_t param) {
+int RAMFUNC SniffIso14443a(uint8_t param) {
     LEDsoff();
     // param:
     // bit 0 - trigger from first card answer
@@ -824,6 +830,12 @@ void RAMFUNC SniffIso14443a(uint8_t param) {
     // The response (tag -> reader) that we're receiving.
     uint8_t *receivedResp = BigBuf_calloc(MAX_FRAME_SIZE);
     uint8_t *receivedRespPar = BigBuf_calloc(MAX_PARITY_SIZE);
+
+    if (receivedCmd == NULL || receivedCmdPar == NULL || receivedResp == NULL || receivedRespPar == NULL) {
+        if (g_dbglevel >= DBG_ERROR) DbpString("Sniff 14a: failed to allocate buffers");
+        BigBuf_free();
+        return PM3_EMALLOC;
+    }
 
     uint8_t previous_data = 0;
     int dataLen;
@@ -847,7 +859,7 @@ void RAMFUNC SniffIso14443a(uint8_t param) {
     // Setup and start DMA.
     if (FpgaSetupSscRxDmaRepeat((uint8_t *) dma->buf, DMA_BUFFER_SIZE) == false) {
         if (g_dbglevel > DBG_ERROR) Dbprintf("FpgaSetupSscRxDmaRepeat failed. Exiting");
-        return;
+        return PM3_EIO;
     }
 
     // We won't start recording the frames that we acquire until we trigger;
@@ -1010,6 +1022,7 @@ void RAMFUNC SniffIso14443a(uint8_t param) {
         }
     }
     switch_off();
+    return PM3_SUCCESS;
 }
 
 //-----------------------------------------------------------------------------
@@ -1690,6 +1703,12 @@ bool SimulateIso14443aInit(uint8_t tagType, uint16_t flags, uint8_t *data,
 #define ALLOCATED_TAG_MODULATION_BUFFER_SIZE (  ((77 + rATS_len) * 8) + 77 + rATS_len + 12 + 12 + 12)
 
     uint8_t *free_buffer = BigBuf_calloc(ALLOCATED_TAG_MODULATION_BUFFER_SIZE);
+    if (free_buffer == NULL) {
+        BigBuf_free_keep_EM();
+        if (g_dbglevel >= DBG_ERROR) DbpString("Failed to allocate modulation buffer");
+        return false;
+    }
+
     // modulation buffer pointer and current buffer free space size
     uint8_t *free_buffer_pointer = free_buffer;
     size_t free_buffer_size = ALLOCATED_TAG_MODULATION_BUFFER_SIZE;
@@ -3154,9 +3173,15 @@ void iso14443a_antifuzz(uint32_t flags) {
     uint8_t *received = BigBuf_calloc(MAX_FRAME_SIZE);
     uint8_t *receivedPar = BigBuf_calloc(MAX_PARITY_SIZE);
     uint8_t *resp = BigBuf_calloc(20);
+    if (received == NULL || receivedPar == NULL || resp == NULL) {
+        if (g_dbglevel >= DBG_ERROR) DbpString("Anti-fuzz: failed to allocate buffers");
+        reply_ng(CMD_HF_ISO14443A_ANTIFUZZ, PM3_EMALLOC, NULL, 0);
+        switch_off();
+        BigBuf_free_keep_EM();
+        return;
+    }
 
-    memset(received, 0x00, MAX_FRAME_SIZE);
-    memset(received, 0x00, MAX_PARITY_SIZE);
+    // BigBuf_calloc() already zeroed the receive buffers
     memset(resp, 0xFF, 20);
 
     LED_A_ON();
@@ -3685,7 +3710,13 @@ b5,b6 = 00 - DESELECT
         11 - WTX
 */
 int iso14_apdu(uint8_t *cmd, uint16_t cmd_len, bool send_chaining, void *data, uint16_t data_len, uint8_t *res) {
-    uint8_t *real_cmd = BigBuf_calloc(cmd_len + 4);
+    // PCB(1) + APDU + CRC(2) has to fit inside one ISO14443 frame, which is
+    // also the limit ReaderTransmit() can encode into the tosend buffer.
+    if (cmd_len + 3 > MAX_FRAME_SIZE) {
+        return PM3_EINVARG;
+    }
+
+    uint8_t real_cmd[MAX_FRAME_SIZE] = {0};
 
     if (cmd_len) {
         // ISO 14443 APDU frame: PCB [CID] [NAD] APDU CRC PCB=0x02
@@ -3707,7 +3738,6 @@ int iso14_apdu(uint8_t *cmd, uint16_t cmd_len, bool send_chaining, void *data, u
 
     // tearoff occurred
     if (tearoff_hook() == PM3_ETEAROFF) {
-        BigBuf_free();
         return -1;
     }
 
@@ -3715,7 +3745,6 @@ int iso14_apdu(uint8_t *cmd, uint16_t cmd_len, bool send_chaining, void *data, u
     uint8_t *data_bytes = (uint8_t *) data;
 
     if (len == 0) {
-        BigBuf_free();
         return 0; // DATA LINK ERROR
     }
 
@@ -3725,12 +3754,10 @@ int iso14_apdu(uint8_t *cmd, uint16_t cmd_len, bool send_chaining, void *data, u
     while (len && ((data_bytes[0] & 0xF2) == 0xF2)) {
 
         if (BUTTON_PRESS() || data_available()) {
-            BigBuf_free();
             return -3;
         }
 
-        // Inform client of WTX of timeout in ms
-        // 38ms == MAX_ISO14A_TIMEOUT
+        // Inform client of WTX 38ms == MAX_ISO14A_TIMEOUT
         send_wtx(38);
 
         // byte1 - WTXM [1..59]. command FWT=FWT*WTXM
@@ -3751,7 +3778,6 @@ int iso14_apdu(uint8_t *cmd, uint16_t cmd_len, bool send_chaining, void *data, u
 
     }
 
-    // restore timeout
     iso14a_set_timeout(save_iso14a_timeout);
 
     // if we received an I- or R(ACK)-Block with a block number equal to the
@@ -3768,43 +3794,71 @@ int iso14_apdu(uint8_t *cmd, uint16_t cmd_len, bool send_chaining, void *data, u
         *res = data_bytes[0];
     }
 
-    // crc check
     if (len >= 3 && !CheckCrc14A(data_bytes, len)) {
-        BigBuf_free();
         return -1;
     }
 
     if (len) {
         // cut frame byte
         len -= 1;
-        // memmove(data_bytes, data_bytes + 1, len);
         for (int i = 0; i < len; i++) {
             data_bytes[i] = data_bytes[i + 1];
         }
     }
 
-    BigBuf_free();
     return len;
+}
+
+static void reply_iso14a_raw(iso14a_raw_resp_t *response, uint8_t *respbuf, uint16_t len) {
+    response->len = len;
+    response->sel = 0;
+    reply_ng(CMD_HF_ISO14443A_READER, PM3_SUCCESS, respbuf, ISO14A_RESP_LEN(len));
 }
 
 //-----------------------------------------------------------------------------
 // Read an ISO 14443a tag. Send out commands and store answers.
 //-----------------------------------------------------------------------------
-// arg0         iso_14a flags
-// arg1         high ::  number of bits, if you want to send 7bits etc
-//             low  ::  len of commandbytes
-// arg2         timeout
-// d.asBytes command bytes to send
+// Callers send one iso14a_raw_cmd_t and get back one iso14a_raw_resp_t.
 void ReaderIso14443a(PacketCommandNG *c) {
-    iso14a_command_t param = c->oldarg[0];
-    size_t len = c->oldarg[1] & 0xffff;
-    size_t lenbits = c->oldarg[1] >> 16;
-    uint32_t timeout = c->oldarg[2] & 0xffffffff;
-    uint32_t wait_us = c->oldarg[2] >> 32;
-    uint8_t *cmd = c->data.asBytes;
+
+    iso14a_command_t param;
+    size_t len, lenbits;
+    uint32_t timeout, wait_us;
+    uint8_t *cmd;
+
+    if (c->ng) {
+
+        if (c->length < sizeof(iso14a_raw_cmd_t)) {
+            reply_ng(CMD_HF_ISO14443A_READER, PM3_EINVARG, NULL, 0);
+            return;
+        }
+
+        iso14a_raw_cmd_t *payload = (iso14a_raw_cmd_t *)c->data.asBytes;
+
+        if (payload->len > (c->length - sizeof(iso14a_raw_cmd_t))) {
+            reply_ng(CMD_HF_ISO14443A_READER, PM3_EINVARG, NULL, 0);
+            return;
+        }
+
+        param = payload->flags;
+        len = payload->len;
+        lenbits = payload->lenbits;
+        timeout = payload->timeout;
+        wait_us = payload->wait_us;
+        cmd = payload->data;
+
+    } else {
+        // every caller is NG now, OLD/MIX frames are no longer accepted
+        reply_ng(CMD_HF_ISO14443A_READER, PM3_EINVARG, NULL, 0);
+        return;
+    }
+
     uint32_t arg0;
 
-    uint8_t buf[PM3_CMD_DATA_SIZE_MIX] = {0x00};
+    // the reply frame is built in place: `buf` is its data[] area
+    uint8_t respbuf[PM3_CMD_DATA_SIZE] = {0x00};
+    iso14a_raw_resp_t *response = (iso14a_raw_resp_t *)respbuf;
+    uint8_t *buf = response->data;
 
     if ((param & ISO14A_CONNECT) == ISO14A_CONNECT) {
         iso14_pcb_blocknum = 0;
@@ -3846,7 +3900,9 @@ void ReaderIso14443a(PacketCommandNG *c) {
                 crypto1_deinit(&crypto1_state);
             }
 
-            reply_mix(CMD_ACK, arg0, card->uidlen, 0, buf, sizeof(iso14a_card_select_t));
+            response->len = sizeof(iso14a_card_select_t);
+            response->sel = arg0;
+            reply_ng(CMD_HF_ISO14443A_READER, PM3_SUCCESS, respbuf, ISO14A_RESP_LEN(sizeof(iso14a_card_select_t)));
             if (arg0 == 0) {
                 goto OUT;
             }
@@ -3874,11 +3930,13 @@ void ReaderIso14443a(PacketCommandNG *c) {
                    len,
                    ((param & ISO14A_SEND_CHAINING) == ISO14A_SEND_CHAINING),
                    buf,
-                   sizeof(buf),
+                   ISO14A_RESP_MAXLEN,
                    &res
                );
 
-        reply_mix(CMD_ACK, arg0, res, 0, buf, sizeof(buf));
+        response->len = arg0;
+        response->sel = res;
+        reply_ng(CMD_HF_ISO14443A_READER, PM3_SUCCESS, respbuf, ISO14A_RESP_LEN(arg0));
     }
 
     if ((param & ISO14A_RAW) == ISO14A_RAW) {
@@ -3896,7 +3954,10 @@ void ReaderIso14443a(PacketCommandNG *c) {
                     if (g_dbglevel >= DBG_INFO)    Dbprintf("Auth succeeded");
                     res = 0x0a;
                 }
-                reply_mix(CMD_ACK, 1, 0, 0, &res, 1);
+                response->len = 1;
+                response->sel = 0;
+                response->data[0] = res;
+                reply_ng(CMD_HF_ISO14443A_READER, PM3_SUCCESS, respbuf, ISO14A_RESP_LEN(1));
                 goto CMD_DONE;
             }
         }
@@ -3991,17 +4052,17 @@ void ReaderIso14443a(PacketCommandNG *c) {
                 // tearoff occurred
                 if (tearoff_hook() == PM3_ETEAROFF) {
                     FpgaDisableTracing();
-                    reply_mix(CMD_ACK, 0, 0, 0, NULL, 0);
+                    reply_iso14a_raw(response, respbuf, 0);
                 } else {
-                    arg0 = ReaderReceive(buf, sizeof(buf), parity_array);
+                    arg0 = ReaderReceive(buf, ISO14A_RESP_MAXLEN, parity_array);
                     FpgaDisableTracing();
-                    reply_mix(CMD_ACK, arg0, 0, 0, buf, sizeof(buf));
+                    reply_iso14a_raw(response, respbuf, arg0);
                 }
 
             } else {
-                arg0 = ReaderReceive(buf, sizeof(buf), parity_array);
+                arg0 = ReaderReceive(buf, ISO14A_RESP_MAXLEN, parity_array);
                 FpgaDisableTracing();
-                reply_mix(CMD_ACK, arg0, 0, 0, buf, sizeof(buf));
+                reply_iso14a_raw(response, respbuf, arg0);
             }
 
         } else {
@@ -4009,9 +4070,9 @@ void ReaderIso14443a(PacketCommandNG *c) {
             // tearoff occurred
             if (tearoff_hook() == PM3_ETEAROFF) {
                 FpgaDisableTracing();
-                reply_mix(CMD_ACK, 0, 0, 0, NULL, 0);
+                reply_iso14a_raw(response, respbuf, 0);
             } else {
-                arg0 = ReaderReceive(buf, sizeof(buf), parity_array);
+                arg0 = ReaderReceive(buf, ISO14A_RESP_MAXLEN, parity_array);
 
                 if ((param & ISO14A_CRYPTO1MODE) == ISO14A_CRYPTO1MODE) {
                     mf_crypto1_decrypt(&crypto1_state, buf, arg0);
@@ -4021,7 +4082,7 @@ void ReaderIso14443a(PacketCommandNG *c) {
                     increase_session_counter();
                 }
                 FpgaDisableTracing();
-                reply_mix(CMD_ACK, arg0, 0, 0, buf, sizeof(buf));
+                reply_iso14a_raw(response, respbuf, arg0);
             }
         }
     }

@@ -339,16 +339,17 @@ int ul_read_uid(uint8_t *uid) {
     }
     // read uid from tag
     clearCommandBuffer();
-    SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_RATS, 0, 0, NULL, 0);
+    SendIso14aReader(ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_RATS, NULL, 0);
     PacketResponseNG resp;
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 2500) == false) {
+    uint8_t sel_343 = 0;
+    if (WaitForIso14aReply(&resp, 2500, NULL, &sel_343) == false) {
         PrintAndLogEx(WARNING, "timeout while waiting for reply");
         return PM3_ETIMEOUT;
     }
     iso14a_card_select_t card;
     memcpy(&card, (iso14a_card_select_t *)resp.data.asBytes, sizeof(iso14a_card_select_t));
 
-    uint64_t select_status = resp.oldarg[0];
+    uint64_t select_status = sel_343;
     // 0: couldn't read
     // 1: OK with ATS
     // 2: OK, no ATS
@@ -368,7 +369,7 @@ int ul_read_uid(uint8_t *uid) {
 
 static void ul_switch_on_field(void) {
     clearCommandBuffer();
-    SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_DISCONNECT | ISO14A_NO_RATS, 0, 0, NULL, 0);
+    SendIso14aReader(ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_DISCONNECT | ISO14A_NO_RATS, NULL, 0);
 }
 
 static int ul_send_cmd_raw(const uint8_t *cmd, uint8_t cmdlen, uint8_t *response, uint16_t responseLength, bool schann) {
@@ -378,17 +379,18 @@ static int ul_send_cmd_raw(const uint8_t *cmd, uint8_t cmdlen, uint8_t *response
     if (schann) {
         param |= ISO14A_APPEND_CMAC;
     }
-    SendCommandMIX(CMD_HF_ISO14443A_READER, param, cmdlen, 0, cmd, cmdlen);
+    SendIso14aReader(param, cmd, cmdlen);
     PacketResponseNG resp;
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 1500) == false) {
+    uint16_t rlen_383 = 0;
+    if (WaitForIso14aReply(&resp, 1500, &rlen_383, NULL) == false) {
         return PM3_ETIMEOUT;
     }
 
-    if ((resp.oldarg[0] == 0) && responseLength) {
+    if ((rlen_383 == 0) && responseLength) {
         return PM3_EWRONGANSWER;
     }
 
-    uint16_t resplen = (resp.oldarg[0] < responseLength) ? resp.oldarg[0] : responseLength;
+    uint16_t resplen = (rlen_383 < responseLength) ? rlen_383 : responseLength;
     memcpy(response, resp.data.asBytes, resplen);
     return resplen;
 }
@@ -398,13 +400,13 @@ static bool ul_select(iso14a_card_select_t *card) {
     ul_switch_on_field();
 
     PacketResponseNG resp;
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 2000) == false) {
+    if (WaitForIso14aReply(&resp, 2000, NULL, NULL) == false) {
         PrintAndLogEx(DEBUG, "iso14443a card select timeout");
         DropField();
         return false;
     } else {
 
-        uint16_t len = (resp.oldarg[1] & 0xFFFF);
+        uint16_t len = ((const iso14a_card_select_t *)resp.data.asBytes)->uidlen;
         if (len == 0) {
             PrintAndLogEx(DEBUG, "iso14443a card select failed");
             DropField();
@@ -423,13 +425,15 @@ static bool ul_select_rats(iso14a_card_select_t *card) {
     ul_switch_on_field();
 
     PacketResponseNG resp;
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 1500) == false) {
+    uint8_t select_status = 0;
+    uint16_t ats_len = 0;
+    if (WaitForIso14aReply(&resp, 1500, NULL, &select_status) == false) {
         PrintAndLogEx(DEBUG, "iso14443a card select timeout");
         DropField();
         return false;
     } else {
 
-        uint16_t len = (resp.oldarg[1] & 0xFFFF);
+        uint16_t len = ((const iso14a_card_select_t *)resp.data.asBytes)->uidlen;
         if (len == 0) {
             PrintAndLogEx(DEBUG, "iso14443a card select failed");
             DropField();
@@ -440,18 +444,18 @@ static bool ul_select_rats(iso14a_card_select_t *card) {
             memcpy(card, resp.data.asBytes, sizeof(iso14a_card_select_t));
         }
 
-        if (resp.oldarg[0] == 2) { // 0: couldn't read, 1: OK, with ATS, 2: OK, no ATS, 3: proprietary Anticollision
+        if (select_status == 2) { // 0: couldn't read, 1: OK, with ATS, 2: OK, no ATS, 3: proprietary Anticollision
             // get ATS
             uint8_t rats[] = { 0xE0, 0x80 }; // FSDI=8 (FSD=256), CID=0
-            SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_RAW | ISO14A_APPEND_CRC | ISO14A_NO_DISCONNECT, sizeof(rats), 0, rats, sizeof(rats));
-            if (WaitForResponseTimeout(CMD_ACK, &resp, 1500) == false) {
+            SendIso14aReader(ISO14A_RAW | ISO14A_APPEND_CRC | ISO14A_NO_DISCONNECT, rats, sizeof(rats));
+            if (WaitForIso14aReply(&resp, 1500, &ats_len, NULL) == false) {
                 PrintAndLogEx(WARNING, "command execution time out");
                 return false;
             }
         }
 
         if (card) {
-            card->ats_len = resp.oldarg[0];
+            card->ats_len = ats_len;
             memcpy(card->ats, resp.data.asBytes, card->ats_len);
         }
 
@@ -497,9 +501,9 @@ static int ulc_requestAuthentication(uint8_t *nonce, uint16_t nonceLength) {
 }
 
 int mfuc_test_authentication_support(void) {
-    SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_DISCONNECT, 0, 0, NULL, 0);
+    SendIso14aReader(ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_DISCONNECT, NULL, 0);
     PacketResponseNG resp;
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 2500) == false) {
+    if (WaitForIso14aReply(&resp, 2500, NULL, NULL) == false) {
         PrintAndLogEx(DEBUG, "iso14443a card select timeout");
         DropField();
         return PM3_ETIMEOUT;
@@ -803,12 +807,13 @@ static long long unsigned int ul_fudan_check(void) {
 
     uint8_t cmd[4] = {ISO14443A_CMD_READBLOCK, 0x00, 0x02, 0xa7}; // wrong crc on purpose, should be 0xa8
     clearCommandBuffer();
-    SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_RAW | ISO14A_NO_DISCONNECT | ISO14A_NO_RATS, 4, 0, cmd, sizeof(cmd));
+    SendIso14aReader(ISO14A_RAW | ISO14A_NO_DISCONNECT | ISO14A_NO_RATS, cmd, sizeof(cmd));
     PacketResponseNG resp;
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 1500) == false) {
+    uint16_t rlen_810 = 0;
+    if (WaitForIso14aReply(&resp, 1500, &rlen_810, NULL) == false) {
         return MFU_TT_UL_ERROR;
     }
-    if (resp.oldarg[0] != 1) {
+    if (rlen_810 != 1) {
         return MFU_TT_UL_ERROR;
     }
 
@@ -2010,9 +2015,10 @@ static int mfulc_fingerprint(void) {
         return PM3_ESOFT;
     }
     uint8_t cmd0[] = {0xAF};
-    SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_RAW | ISO14A_APPEND_CRC | ISO14A_NO_RATS, sizeof(cmd0), 0, cmd0, sizeof(cmd0));
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 500)) {
-        if ((resp.oldarg[0] == 11) && (resp.data.asBytes[0] == 0x00)) {
+    SendIso14aReader(ISO14A_RAW | ISO14A_APPEND_CRC | ISO14A_NO_RATS, cmd0, sizeof(cmd0));
+    uint16_t rlen_2017 = 0;
+    if (WaitForIso14aReply(&resp, 500, &rlen_2017, NULL)) {
+        if ((rlen_2017 == 11) && (resp.data.asBytes[0] == 0x00)) {
             PrintAndLogEx(SUCCESS, _GREEN_("Lab401 Ultralight-C compatible UID modifiable"));
             DropField();
             return PM3_SUCCESS;
@@ -2027,9 +2033,10 @@ static int mfulc_fingerprint(void) {
         return PM3_ESOFT;
     }
     uint8_t cmd1[] = {0x1A, 0x2F};
-    SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_RAW | ISO14A_APPEND_CRC | ISO14A_NO_RATS, sizeof(cmd1), 0, cmd1, sizeof(cmd1));
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 500)) {
-        if ((resp.oldarg[0] == 11) && (resp.data.asBytes[0] == 0xAF)) {
+    SendIso14aReader(ISO14A_RAW | ISO14A_APPEND_CRC | ISO14A_NO_RATS, cmd1, sizeof(cmd1));
+    uint16_t rlen_2035 = 0;
+    if (WaitForIso14aReply(&resp, 500, &rlen_2035, NULL)) {
+        if ((rlen_2035 == 11) && (resp.data.asBytes[0] == 0xAF)) {
             PrintAndLogEx(SUCCESS, _GREEN_("Feiju FJ8010"));
             DropField();
             return PM3_SUCCESS;
@@ -2044,9 +2051,10 @@ static int mfulc_fingerprint(void) {
         return PM3_ESOFT;
     }
     uint8_t cmd2[] = {0x1A};
-    SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_RAW | ISO14A_NO_RATS, sizeof(cmd2), 0, cmd2, sizeof(cmd2));
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 500)) {
-        if ((resp.oldarg[0] == 11) && (resp.data.asBytes[0] == 0xAF)) {
+    SendIso14aReader(ISO14A_RAW | ISO14A_NO_RATS, cmd2, sizeof(cmd2));
+    uint16_t rlen_2053 = 0;
+    if (WaitForIso14aReply(&resp, 500, &rlen_2053, NULL)) {
+        if ((rlen_2053 == 11) && (resp.data.asBytes[0] == 0xAF)) {
             uint8_t response[11] = {0};
             memcpy(response, resp.data.asBytes, 9);
             compute_crc(CRC_14443_A, response, 9, response + 9, response + 10);
@@ -2068,12 +2076,16 @@ static int mfulc_fingerprint(void) {
     // GT23SC4489
     uint8_t cmd3a[] = {0x26};
     uint8_t cmd3b[] = {0x30};
-    SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_RAW | ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_SELECT | ISO14A_NO_DISCONNECT, 7 << 16, 0, cmd3a, sizeof(cmd3a));
-    if (WaitForResponseTimeout(CMD_ACK, &resp, 500)) {
-        if (resp.oldarg[0] == 2) {
-            SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_RAW | ISO14A_NO_SELECT, sizeof(cmd3b), 0, cmd3b, sizeof(cmd3b));
-            if (WaitForResponseTimeout(CMD_ACK, &resp, 500)) {
-                if (resp.oldarg[0] == 18) {
+    // 7 bit REQA, so lenbits carries it and len stays 0
+    SendIso14aReaderEx(ISO14A_RAW | ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_SELECT | ISO14A_NO_DISCONNECT
+                       , cmd3a, sizeof(cmd3a), 0, 7, 0, 0);
+    uint16_t rlen_2080 = 0;
+    if (WaitForIso14aReply(&resp, 500, &rlen_2080, NULL)) {
+        if (rlen_2080 == 2) {
+            SendIso14aReader(ISO14A_RAW | ISO14A_NO_SELECT, cmd3b, sizeof(cmd3b));
+            uint16_t rlen_2084 = 0;
+            if (WaitForIso14aReply(&resp, 500, &rlen_2084, NULL)) {
+                if (rlen_2084 == 18) {
                     if ((resp.data.asBytes[0] == 0x04) && (resp.data.asBytes[6] == 0x15) && (resp.data.asBytes[7] == 0x89)) {
                         PrintAndLogEx(SUCCESS, _GREEN_("GT23SC4489"));
                     } else {
@@ -4411,8 +4423,6 @@ static int mfu_3pass_load_keys(uint8_t **pkeyBlock, uint32_t *pkeycnt, const cha
     return PM3_SUCCESS;
 }
 
-#define MIFAREU3P_CHKKEY_HEADER (3 + MIFAREU3P_KEY_SIZE)
-
 static int mfu_3pass_check_keys(uint8_t key_index, uint8_t firstChunk, uint8_t lastChunk,
                                 uint32_t nkeys, int segment, uint8_t *ref_key, bool xor_ref_key, uint8_t *keyBlock,
                                 bool verbose, bool quiet, uint32_t *auths, uint32_t *ms, bool check_answer, bool use_fastread0) {
@@ -4436,14 +4446,14 @@ static int mfu_3pass_check_keys(uint8_t key_index, uint8_t firstChunk, uint8_t l
     } PACKED;
     uint8_t keysize = segment != -1 ? MIFAREU3P_KEY_SIZE / 4 : MIFAREU3P_KEY_SIZE;
     memcpy(payload.ref_key, ref_key, MIFAREU3P_KEY_SIZE);
-    if (nkeys * keysize > sizeof(payload.data)) {
+    if (nkeys * keysize > (uint32_t)(g_conn.max_cmd_data_size - MIFAREU3P_CHKKEY_HEADER)) {
         PrintAndLogEx(ERR, "Key chunk size exceeds payload size");
         return PM3_ESOFT;
     }
     memcpy(payload.data, keyBlock, nkeys * keysize);
 
     clearCommandBuffer();
-    SendCommandNG(CMD_HF_MIFAREU3P_CHKKEY, (uint8_t *)&payload, sizeof(payload));
+    SendCommandNG(CMD_HF_MIFAREU3P_CHKKEY, (uint8_t *)&payload, MIFAREU3P_CHKKEY_HEADER + nkeys * keysize);
 
     PacketResponseNG resp;
 
@@ -4678,7 +4688,7 @@ static int CmdHF14AMfUCAuth(const char *Cmd) {
             uint16_t max_retries_per_call = retries;
             if (collect_nonces) {
                 // Not strictly needed, but to avoid fw warning
-                max_retries_per_call = ((PM3_CMD_DATA_SIZE - sizeof(uint32_t) * 2) / sizeof(uint64_t)) - 1;
+                max_retries_per_call = ((g_conn.max_cmd_data_size - sizeof(uint32_t) * 2) / sizeof(uint64_t)) - 1;
             }
             isok = ul3pass_authentication(auth_key_ptr, MIFAREULC_KEY_INDEX, !keep_field_on, MIN(retries - auths, max_retries_per_call), &auths, &ms, false, !skip_auth, check_answer, use_fastread0, collect_nonces, (uint8_t *)(nonces + auths), reset_field, available_pairs, pairs);
         } while (skip_auth && auths < 1 + retries);
@@ -4773,8 +4783,12 @@ static int CmdHF14AMfUCAuthChk(const char *Cmd) {
         return PM3_ESOFT;
     }
 
-    uint32_t chunksize = (keycnt > (PM3_CMD_DATA_SIZE - MIFAREU3P_CHKKEY_HEADER) / keysize) ?
-                         ((PM3_CMD_DATA_SIZE - MIFAREU3P_CHKKEY_HEADER) / keysize) : keycnt;
+    // cap by what fits in one frame, then by what the nkeys field can announce
+    uint32_t max_chunk = (g_conn.max_cmd_data_size - MIFAREU3P_CHKKEY_HEADER) / keysize;
+    if (max_chunk > MIFAREU3P_CHKKEY_MAX_KEYS) {
+        max_chunk = MIFAREU3P_CHKKEY_MAX_KEYS;
+    }
+    uint32_t chunksize = (keycnt > max_chunk) ? max_chunk : keycnt;
     bool firstChunk = true, lastChunk = false;
 
     int i = 0;
@@ -4988,8 +5002,12 @@ static int CmdHF14AMfUAESAuthChk(const char *Cmd) {
         return PM3_ESOFT;
     }
 
-    uint32_t chunksize = (keycnt > (PM3_CMD_DATA_SIZE - MIFAREU3P_CHKKEY_HEADER) / keysize) ?
-                         ((PM3_CMD_DATA_SIZE - MIFAREU3P_CHKKEY_HEADER) / keysize) : keycnt;
+    // cap by what fits in one frame, then by what the nkeys field can announce
+    uint32_t max_chunk = (g_conn.max_cmd_data_size - MIFAREU3P_CHKKEY_HEADER) / keysize;
+    if (max_chunk > MIFAREU3P_CHKKEY_MAX_KEYS) {
+        max_chunk = MIFAREU3P_CHKKEY_MAX_KEYS;
+    }
+    uint32_t chunksize = (keycnt > max_chunk) ? max_chunk : keycnt;
     bool firstChunk = true, lastChunk = false;
 
     int i = 0;
@@ -6118,9 +6136,10 @@ static int CmdHF14AMfUKeyGen(const char *Cmd) {
     if (read_tag) {
         // read uid from tag
         clearCommandBuffer();
-        SendCommandMIX(CMD_HF_ISO14443A_READER, ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_RATS, 0, 0, NULL, 0);
+        SendIso14aReader(ISO14A_CONNECT | ISO14A_CLEARTRACE | ISO14A_NO_RATS, NULL, 0);
         PacketResponseNG resp;
-        if (WaitForResponseTimeout(CMD_ACK, &resp, 2500) == false) {
+        uint8_t sel_6133 = 0;
+        if (WaitForIso14aReply(&resp, 2500, NULL, &sel_6133) == false) {
             PrintAndLogEx(WARNING, "timeout while waiting for reply");
             return PM3_ETIMEOUT;
         }
@@ -6128,7 +6147,7 @@ static int CmdHF14AMfUKeyGen(const char *Cmd) {
         iso14a_card_select_t card;
         memcpy(&card, (iso14a_card_select_t *)resp.data.asBytes, sizeof(iso14a_card_select_t));
 
-        uint64_t select_status = resp.oldarg[0];
+        uint64_t select_status = sel_6133;
         // 0: couldn't read,
         // 1: OK, with ATS
         // 2: OK, no ATS
@@ -6396,8 +6415,8 @@ static int CmdHF14AMfuOtpTearoff(const char *Cmd) {
         PrintAndLogEx(WARNING, "end time smaller than increase value");
         return PM3_EINVARG;
     }
-    if (end > 43000) {
-        PrintAndLogEx(WARNING, "end time - out of 1 .. 43000 range");
+    if (end > 65535) {
+        PrintAndLogEx(WARNING, "end time - out of 1 .. 65535 range");
         return PM3_EINVARG;
     }
     if (start > (end - steps)) {
@@ -6496,7 +6515,12 @@ static int CmdHF14AMfuOtpTearoff(const char *Cmd) {
         memcpy(post, resp.data.asBytes, sizeof(post));
 
         clearCommandBuffer();
-        SendCommandMIX(CMD_HF_MFU_OTP_TEAROFF, blockno, current, 0, teardata, sizeof(teardata));
+        uint8_t tbuf[sizeof(mfu_otp_tearoff_t) + sizeof(teardata)] = {0};
+        mfu_otp_tearoff_t *tpayload = (mfu_otp_tearoff_t *)tbuf;
+        tpayload->blockno = blockno;
+        tpayload->tearoff_time = current;
+        memcpy(tpayload->data, teardata, sizeof(teardata));
+        SendCommandNG(CMD_HF_MFU_OTP_TEAROFF, tbuf, sizeof(tbuf));
 
         // we be getting ACK that we are silently ignoring here..
 
@@ -6704,8 +6728,8 @@ static int CmdHF14AMfuEv1CounterTearoff(const char *Cmd) {
         PrintAndLogEx(WARNING, "Wrong time limit number");
         return PM3_EINVARG;
     }
-    if (time_limit > 43000) {
-        PrintAndLogEx(WARNING, "You can't set delay out of 1..43000 range!");
+    if (time_limit > 65535) {
+        PrintAndLogEx(WARNING, "You can't set delay out of 1..65535 range!");
         return PM3_EINVARG;
     }
     uint8_t cnt_no = 0;
@@ -9027,9 +9051,9 @@ static int CmdHF14AMfUeSetBlk(const char *Cmd) {
 
     // one esetblk is a single CMD_HF_MIFARE_EML_MEMSET; its payload (data + a 4-byte
     // header) must fit the command buffer. Larger sets should use `hf mfu eload`.
-    if (datalen > (int)(PM3_CMD_DATA_SIZE - 4)) {
+    if (datalen > (int)(g_conn.max_cmd_data_size - 4)) {
         PrintAndLogEx(WARNING, "too many pages for one command: max %d pages (%d bytes). Use " _YELLOW_("`hf mfu eload`") " for larger sets",
-                      (int)((PM3_CMD_DATA_SIZE - 4) / MFU_BLOCK_SIZE), (int)(PM3_CMD_DATA_SIZE - 4));
+                      (int)((g_conn.max_cmd_data_size - 4) / MFU_BLOCK_SIZE), (int)(g_conn.max_cmd_data_size - 4));
         return PM3_EINVARG;
     }
 

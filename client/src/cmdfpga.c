@@ -4,6 +4,7 @@
 #include "comms.h"
 #include "cmdfpga.h"
 #include "ui.h"
+#include "util_posix.h" // msclock
 
 static int CmdHelp(const char *Cmd);
 
@@ -53,11 +54,6 @@ static int CmdConfigFpga(const char *Cmd) {
         return PM3_EFILE;
     }
 
-    // TODO DXL Maybe length check for device model is required.
-    //  coming soon
-
-    // TODO DXL check response result is required
-
     struct {
         uint8_t sram_mode;
         uint32_t file_length;
@@ -69,6 +65,7 @@ static int CmdConfigFpga(const char *Cmd) {
     PrintAndLogEx(INFO, "Starting FPGA configuration in " _YELLOW_("%s"), sram_mode ? "SRAM" : "Flash");
 
     // Start fpga config by mode
+    uint64_t t_start = msclock();
     SendCommandNG(CMD_FPGA_BITSTREAM_CONFIG_START, (uint8_t *)&params, sizeof(params));
     // Wait for response before sending data
     if (WaitForResponseTimeout(CMD_FPGA_BITSTREAM_CONFIG_START, &resp, 15000) == false) {
@@ -90,7 +87,7 @@ static int CmdConfigFpga(const char *Cmd) {
     // Start to send data in chunks
     size_t offset = 0;
     while (offset < datalen) {
-        size_t chunk_size = (datalen - offset) > PM3_CMD_DATA_SIZE ? PM3_CMD_DATA_SIZE : (datalen - offset);
+        size_t chunk_size = (datalen - offset) > g_conn.max_cmd_data_size ? g_conn.max_cmd_data_size : (datalen - offset);
         SendCommandNG(CMD_FPGA_BITSTREAM_CONFIG_WRITE, data + offset, chunk_size);
         // Wait for response before sending next chunk
         if (WaitForResponseTimeout(CMD_FPGA_BITSTREAM_CONFIG_WRITE, &resp, 5000) == false) {
@@ -123,7 +120,9 @@ static int CmdConfigFpga(const char *Cmd) {
         return resp.status;
     }
 
-    PrintAndLogEx(SUCCESS, "FPGA configuration successfully!");
+    uint64_t elapsed_ms = msclock() - t_start;
+    PrintAndLogEx(SUCCESS, "FPGA configuration successfully! Total time: " _YELLOW_("%.2f") " s (" _YELLOW_("%.0f") " ms)",
+                  (float)elapsed_ms / 1000.0f, (float)elapsed_ms);
     free(data);
     return PM3_SUCCESS;
 }
@@ -139,8 +138,8 @@ static int CmdFpgaSetPowerPWM(const char *Cmd) {
         arg_param_begin,
         arg_lit0("l", "lf", "Set the driver voltage for LF. When not specified as LF, default setting for HF."),
         arg_int0("c", "count", "<int>", "PWM output low level counting used to control the voltage of the driver. "
-                                        "The larger the value, the higher the voltage; "
-                                        "the smaller the value, the lower the voltage."),
+        "The larger the value, the higher the voltage; "
+        "the smaller the value, the lower the voltage."),
         arg_param_end
     };
     CLIExecWithReturn(ctx, Cmd, argtable, false);

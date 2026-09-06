@@ -118,6 +118,13 @@
 #define ISO15693_MAX_RESPONSE_LENGTH     2116 // allows read multiple block with the maximum block size of 256bits and a maximum block number of 64 with REQ_OPTION (lock status for each block).
 #define ISO15693_MAX_COMMAND_LENGTH      45 // allows write single block with the maximum block size of 256bits. Write multiple blocks not supported yet
 
+// Shared response buffer for the reader helpers below. At ISO15693_MAX_RESPONSE_LENGTH each
+// these are 2116 bytes, and the SLIX/AFI helpers nest up to three deep, which put over 6 kB
+// of the 8.4 kB stack into a single call chain. Every user fills it with one SendDataTag call
+// and consumes the result before returning, and no user reads it across a nested call, so one
+// buffer serves all of them. Not used by SimTagIso15693, which keeps its own.
+static uint8_t s_iso15_recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
+
 // 32 + 2 crc + 1
 #define ISO15_MAX_FRAME     35
 #define CMD_ID_RESP         5
@@ -1539,8 +1546,12 @@ int GetIso15693CommandFromReader(uint8_t *received, size_t max_len, uint32_t *eo
     }
     const uint8_t *upTo = dma->buf;
 
+    uint16_t poll_countdown = 0;
     uint32_t dma_start_time = GetCountSspClk() & 0xfffffff8;
 
+    // This loop has to consume one DMA byte per ~0.66 us
+    // ~31 CPU cycles at 48 MHz
+    // or the 512 byte circular buffer overruns
     for (;;) {
         volatile uint16_t behindBy = ((uint8_t *)FPGA_SSC_DMA_RX_Current_Address() - upTo) & (DMA_BUFFER_SIZE - 1);
         if (behindBy == 0) {
@@ -1583,12 +1594,17 @@ int GetIso15693CommandFromReader(uint8_t *received, size_t max_len, uint32_t *eo
             break;
         }
 
-        if (allow_usb_interrupt &&
-                (dr->state == STATE_READER_UNSYNCD ||
-                 dr->state == STATE_READER_AWAIT_1ST_FALLING_EDGE_OF_SOF) &&
-                data_available()) {
-            dr->byteCount = -2;
-            break;
+
+        // Only check data_available every 1024 DMA bytes, still reacts fast
+        // to client "hw break"
+        if (allow_usb_interrupt && (poll_countdown-- == 0)) {
+            poll_countdown = 1023;
+            if ((dr->state == STATE_READER_UNSYNCD ||
+                    dr->state == STATE_READER_AWAIT_1ST_FALLING_EDGE_OF_SOF) &&
+                    data_available()) {
+                dr->byteCount = -2;
+                break;
+            }
         }
 
         WDT_HIT();
@@ -1685,13 +1701,22 @@ void SniffIso15693(uint8_t jam_search_len, uint8_t *jam_search_string, bool icla
     clear_trace();
     set_tracing(true);
 
+    // Two ISO15693_MAX_RESPONSE_LENGTH buffers are 4232 bytes, half of the whole ARM stack.
+    // This function is called from the AppMain command loop and from standalone modes, so keep
+    // them in BigBuf like the other readers in this file do.
+    uint8_t *response = BigBuf_calloc(ISO15693_MAX_RESPONSE_LENGTH);
+    uint8_t *response2 = BigBuf_calloc(ISO15693_MAX_RESPONSE_LENGTH);
+    if (response == NULL || response2 == NULL) {
+        if (g_dbglevel > DBG_ERROR) DbpString("Failed to allocate response buffers. Exiting");
+        switch_off();
+        return;
+    }
+
     DecodeTag_t dtag = {0};
-    uint8_t response[ISO15693_MAX_RESPONSE_LENGTH] = {0};
-    DecodeTagInit(&dtag, response, sizeof(response));
+    DecodeTagInit(&dtag, response, ISO15693_MAX_RESPONSE_LENGTH);
 
     DecodeTagFSK_t dtagfsk = {0};
-    uint8_t response2[ISO15693_MAX_RESPONSE_LENGTH] = {0};
-    DecodeTagFSKInit(&dtagfsk, response2, sizeof(response2));
+    DecodeTagFSKInit(&dtagfsk, response2, ISO15693_MAX_RESPONSE_LENGTH);
 
     DecodeReader_t dreader = {0};
     uint8_t cmd[ISO15693_MAX_COMMAND_LENGTH] = {0};
@@ -2796,7 +2821,7 @@ void BruteforceIso15693Afi(uint32_t flags) {
     // first without AFI
     // Tags should respond without AFI and with AFI=0 even when AFI is active
     uint8_t data[7] = {0};
-    uint8_t recv[ISO15693_MAX_RESPONSE_LENGTH] = {0};
+    memset(s_iso15_recvbuf, 0, sizeof(s_iso15_recvbuf));
 
     data[0] = (ISO15_REQ_SUBCARRIER_SINGLE | ISO15_REQ_DATARATE_HIGH | ISO15_REQ_INVENTORY | ISO15_REQINV_SLOT1);
     data[1] = ISO15693_INVENTORY;
@@ -2806,7 +2831,7 @@ void BruteforceIso15693Afi(uint32_t flags) {
     int datalen = 5;
     uint32_t eof_time = 0;
     uint16_t recvlen = 0;
-    int res = SendDataTag(data, datalen, true, speed, recv, sizeof(recv), 0, ISO15693_READER_TIMEOUT, &eof_time, &recvlen);
+    int res = SendDataTag(data, datalen, true, speed, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), 0, ISO15693_READER_TIMEOUT, &eof_time, &recvlen);
     if (res != PM3_SUCCESS) {
         DbpString("Failed to select card");
         reply_ng(CMD_HF_ISO15693_FINDAFI, res, NULL, 0);
@@ -2818,7 +2843,7 @@ void BruteforceIso15693Afi(uint32_t flags) {
     WDT_HIT();
 
     if (recvlen >= 12) {
-        Dbprintf("NoAFI UID = %s", iso15693_sprintUID(NULL, recv + 2));
+        Dbprintf("NoAFI UID = %s", iso15693_sprintUID(NULL, s_iso15_recvbuf + 2));
     }
 
     // now with AFI
@@ -2836,13 +2861,13 @@ void BruteforceIso15693Afi(uint32_t flags) {
         AddCrc15(data, 4);
 
         recvlen = 0;
-        res = SendDataTag(data, datalen, false, speed, recv, sizeof(recv), start_time, ISO15693_READER_TIMEOUT, &eof_time, &recvlen);
+        res = SendDataTag(data, datalen, false, speed, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT, &eof_time, &recvlen);
         start_time = eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
 
         WDT_HIT();
 
         if (recvlen >= 12) {
-            Dbprintf("AFI = %i  UID = %s", i, iso15693_sprintUID(NULL, recv + 2));
+            Dbprintf("AFI = %i  UID = %s", i, iso15693_sprintUID(NULL, s_iso15_recvbuf + 2));
         }
 
         aborted = (BUTTON_PRESS() || data_available());
@@ -3001,9 +3026,9 @@ void SendRawCommand15693(iso15_raw_cmd_t *packet) {
         uint32_t start_time = 0;
         uint16_t recvlen = 0;
 
-        uint8_t buf[ISO15693_MAX_RESPONSE_LENGTH] = {0x00};
+        memset(s_iso15_recvbuf, 0, sizeof(s_iso15_recvbuf));
 
-        int res = SendDataTag(packet->raw, packet->rawlen, init, speed, (read_respone ? buf : NULL), sizeof(buf), start_time, timeout, &eof_time, &recvlen);
+        int res = SendDataTag(packet->raw, packet->rawlen, init, speed, (read_respone ? s_iso15_recvbuf : NULL), sizeof(s_iso15_recvbuf), start_time, timeout, &eof_time, &recvlen);
 
         if (res == PM3_ETEAROFF) { // tearoff occurred
             reply_ng(CMD_HF_ISO15693_COMMAND, res, NULL, 0);
@@ -3014,7 +3039,7 @@ void SendRawCommand15693(iso15_raw_cmd_t *packet) {
             if (recvlen || !request_answer) {
                 if (request_answer || read_respone) {
                     recvlen = MIN(recvlen, ISO15693_MAX_RESPONSE_LENGTH);
-                    reply_ng(CMD_HF_ISO15693_COMMAND, res, buf, recvlen);
+                    reply_ng(CMD_HF_ISO15693_COMMAND, res, s_iso15_recvbuf, recvlen);
                 } else {
                     reply_ng(CMD_HF_ISO15693_COMMAND, PM3_SUCCESS, NULL, 0);
                 }
@@ -3025,11 +3050,11 @@ void SendRawCommand15693(iso15_raw_cmd_t *packet) {
 
                 // send a single EOF to get the tag response
                 start_time = eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-                res = SendDataTagEOF((read_respone ? buf : NULL), sizeof(buf), start_time, ISO15693_READER_TIMEOUT, &eof_time, fsk, recv_speed, &recvlen);
+                res = SendDataTagEOF((read_respone ? s_iso15_recvbuf : NULL), sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT, &eof_time, fsk, recv_speed, &recvlen);
 
                 if (read_respone) {
                     recvlen = MIN(recvlen, ISO15693_MAX_RESPONSE_LENGTH);
-                    reply_ng(CMD_HF_ISO15693_COMMAND, res, buf, recvlen);
+                    reply_ng(CMD_HF_ISO15693_COMMAND, res, s_iso15_recvbuf, recvlen);
                 } else {
                     reply_ng(CMD_HF_ISO15693_COMMAND, PM3_SUCCESS, NULL, 0);
                 }
@@ -3060,7 +3085,6 @@ void LockPassSlixIso15693(uint32_t pass_id, uint32_t password) {
     uint8_t cmd_lock_pass[] = {ISO15693_REQ_DATARATE_HIGH | ISO15693_REQ_ADDRESS, ISO15693_LOCK_PASSWORD, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00 };
     uint16_t crc;
     uint16_t recvlen = 0;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint32_t start_time = 0;
     bool done = false;
     int res;
@@ -3095,24 +3119,24 @@ void LockPassSlixIso15693(uint32_t pass_id, uint32_t password) {
             break;
         }
 
-        res = SendDataTag(cmd_get_rnd, sizeof(cmd_get_rnd), true, true, recvbuf, sizeof(recvbuf), start_time, &recvlen);
+        res = SendDataTag(cmd_get_rnd, sizeof(cmd_get_rnd), true, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, &recvlen);
         if (res != PM3_SUCCESS && recvlen != 5) {
             LED_C_ON();
         } else {
-            Dbprintf("LockPass: Received random 0x%02X%02X (%d)", recvbuf[1], recvbuf[2], recvlen);
+            Dbprintf("LockPass: Received random 0x%02X%02X (%d)", s_iso15_recvbuf[1], s_iso15_recvbuf[2], recvlen);
 
             // setup 'set password' command
-            cmd_set_pass[4] = ((password>>0) &0xFF) ^ recvbuf[1];
-            cmd_set_pass[5] = ((password>>8) &0xFF) ^ recvbuf[2];
-            cmd_set_pass[6] = ((password>>16) &0xFF) ^ recvbuf[1];
-            cmd_set_pass[7] = ((password>>24) &0xFF) ^ recvbuf[2];
+            cmd_set_pass[4] = ((password>>0) &0xFF) ^ s_iso15_recvbuf[1];
+            cmd_set_pass[5] = ((password>>8) &0xFF) ^ s_iso15_recvbuf[2];
+            cmd_set_pass[6] = ((password>>16) &0xFF) ^ s_iso15_recvbuf[1];
+            cmd_set_pass[7] = ((password>>24) &0xFF) ^ s_iso15_recvbuf[2];
 
             crc = Iso15693Crc(cmd_set_pass, 8);
             cmd_set_pass[8] = crc & 0xff;
             cmd_set_pass[9] = crc >> 8;
 
             Dbprintf("LockPass: Sending old password to end privacy mode", cmd_set_pass[4], cmd_set_pass[5], cmd_set_pass[6], cmd_set_pass[7]);
-            res = SendDataTag(cmd_set_pass, sizeof(cmd_set_pass), false, true, recvbuf, sizeof(recvbuf), start_time, &recvlen);
+            res = SendDataTag(cmd_set_pass, sizeof(cmd_set_pass), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, &recvlen);
             if (res != PM3_SUCCESS && recvlen != 3) {
                 Dbprintf("LockPass: Failed to set password (%d)", recvlen);
                 LED_B_ON();
@@ -3122,16 +3146,16 @@ void LockPassSlixIso15693(uint32_t pass_id, uint32_t password) {
                 cmd_inventory[4] = crc >> 8;
 
                 Dbprintf("LockPass: Searching for tag...");
-                res = SendDataTag(cmd_inventory, sizeof(cmd_inventory), false, true, recvbuf, sizeof(recvbuf), start_time, &recvlen);
+                res = SendDataTag(cmd_inventory, sizeof(cmd_inventory), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, &recvlen);
                 if (res != PM3_SUCCESS && recvlen != 12) {
                     Dbprintf("LockPass: Failed to read inventory (%d)", recvlen);
                     LED_B_ON();
                     LED_C_ON();
                 } else {
 
-                    Dbprintf("LockPass: Answer from %02X%02X%02X%02X%02X%02X%02X%02X", recvbuf[9], recvbuf[8], recvbuf[7], recvbuf[6], recvbuf[5], recvbuf[4], recvbuf[3], recvbuf[2]);
+                    Dbprintf("LockPass: Answer from %02X%02X%02X%02X%02X%02X%02X%02X", s_iso15_recvbuf[9], s_iso15_recvbuf[8], s_iso15_recvbuf[7], s_iso15_recvbuf[6], s_iso15_recvbuf[5], s_iso15_recvbuf[4], s_iso15_recvbuf[3], s_iso15_recvbuf[2]);
 
-                    memcpy(&cmd_lock_pass[3], &recvbuf[2], 8);
+                    memcpy(&cmd_lock_pass[3], &s_iso15_recvbuf[2], 8);
 
                     cmd_lock_pass[8+3] = pass_id;
 
@@ -3141,7 +3165,7 @@ void LockPassSlixIso15693(uint32_t pass_id, uint32_t password) {
 
                     Dbprintf("LockPass: locking to password 0x%02X%02X%02X%02X for ID %02X", cmd_set_pass[4], cmd_set_pass[5], cmd_set_pass[6], cmd_set_pass[7], pass_id);
 
-                    res = SendDataTag(cmd_lock_pass, sizeof(cmd_lock_pass), false, true, recvbuf, sizeof(recvbuf), start_time, &recvlen);
+                    res = SendDataTag(cmd_lock_pass, sizeof(cmd_lock_pass), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, &recvlen);
                     if (res != PM3_SUCCESS && recvlen != 3) {
                         Dbprintf("LockPass: Failed to lock password (%d)", recvlen);
                     } else {
@@ -3153,7 +3177,7 @@ void LockPassSlixIso15693(uint32_t pass_id, uint32_t password) {
     }
 
     Dbprintf("LockPass: Finishing");
-    cmd_send(CMD_ACK, recvlen, 0, 0, recvbuf, recvlen);
+    cmd_send(CMD_ACK, recvlen, 0, 0, s_iso15_recvbuf, recvlen);
 }
 */
 
@@ -3181,7 +3205,7 @@ void SetTag15693Uid(const uint8_t *uid) {
     AddCrc15(cmd[2], 7);
     AddCrc15(cmd[3], 7);
 
-    uint8_t buf[ISO15693_MAX_RESPONSE_LENGTH] = {0x00};
+    memset(s_iso15_recvbuf, 0, sizeof(s_iso15_recvbuf));
 
     uint32_t start_time = 0;
     uint32_t eof_time = 0;
@@ -3195,8 +3219,8 @@ void SetTag15693Uid(const uint8_t *uid) {
                   sizeof(cmd[i]),
                   (i == 0) ? true : false,
                   true,
-                  buf,
-                  sizeof(buf),
+                  s_iso15_recvbuf,
+                  sizeof(s_iso15_recvbuf),
                   start_time,
                   ISO15693_READER_TIMEOUT_WRITE,
                   &eof_time,
@@ -3225,7 +3249,7 @@ void SetTag15693Uid_v2(const uint8_t *uid) {
         {ISO15_REQ_DATARATE_HIGH, ISO15693_MAGIC_WRITE, 0x09, 0x41, uid[3], uid[2], uid[1], uid[0], 0x00, 0x00}
     };
 
-    uint8_t buf[ISO15693_MAX_RESPONSE_LENGTH] = {0x00};
+    memset(s_iso15_recvbuf, 0, sizeof(s_iso15_recvbuf));
 
     uint32_t start_time = 0;
     uint32_t eof_time = 0;
@@ -3241,8 +3265,8 @@ void SetTag15693Uid_v2(const uint8_t *uid) {
                   sizeof(cmd[i]),
                   (i == 0) ? true : false,
                   true,
-                  buf,
-                  sizeof(buf),
+                  s_iso15_recvbuf,
+                  sizeof(s_iso15_recvbuf),
                   start_time,
                   ISO15693_READER_TIMEOUT_WRITE,
                   &eof_time,
@@ -3272,15 +3296,14 @@ static bool get_rnd_15693_Slix(uint32_t start_time, uint32_t *eof_time, uint8_t 
     uint8_t c[] = {ISO15_REQ_DATARATE_HIGH, ISO15693_GET_RANDOM_NUMBER, 0x04, 0x00, 0x00 };
     AddCrc15(c, 3);
 
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
-    int res = SendDataTag(c, sizeof(c), true, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res = SendDataTag(c, sizeof(c), true, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res != PM3_SUCCESS && recvlen != 5) {
         return false;
     }
 
     if (rnd) {
-        memcpy(rnd, &recvbuf[1], 2);
+        memcpy(rnd, &s_iso15_recvbuf[1], 2);
     }
     return true;
 }
@@ -3298,9 +3321,8 @@ static uint32_t disable_privacy_15693_Slix(uint32_t start_time, uint32_t *eof_ti
     AddCrc15(c, 8);
 
     start_time = *eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
-    int res = SendDataTag(c, sizeof(c), false, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res = SendDataTag(c, sizeof(c), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res != PM3_SUCCESS && recvlen != 3) {
         return PM3_EWRONGANSWER;
     }
@@ -3317,10 +3339,9 @@ static uint32_t set_pass_15693_SlixRnd(uint32_t start_time, uint32_t *eof_time, 
     AddCrc15(c, 16);
 
     start_time = *eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
 
-    int res = SendDataTag(c, sizeof(c), false, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res = SendDataTag(c, sizeof(c), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res != PM3_SUCCESS && recvlen != 3) {
         return PM3_EWRONGANSWER;
     }
@@ -3351,9 +3372,8 @@ static uint32_t set_privacy_15693_Slix(uint32_t start_time, uint32_t *eof_time, 
     AddCrc15(c, 7);
 
     start_time = *eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
-    int res = SendDataTag(c, sizeof(c), false, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res = SendDataTag(c, sizeof(c), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res != PM3_SUCCESS && recvlen != 3) {
         return PM3_EWRONGANSWER;
     }
@@ -3384,9 +3404,8 @@ static uint32_t disable_eas_15693_Slix(uint32_t start_time, uint32_t *eof_time, 
     AddCrc15(c, 3);
 
     start_time = *eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
-    int res = SendDataTag(c, sizeof(c), false, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res = SendDataTag(c, sizeof(c), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res != PM3_SUCCESS && recvlen != 3) {
         return PM3_EWRONGANSWER;
     }
@@ -3416,9 +3435,8 @@ static uint32_t enable_eas_15693_Slix(uint32_t start_time, uint32_t *eof_time, c
     AddCrc15(c, 3);
 
     start_time = *eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
-    int res = SendDataTag(c, sizeof(c), false, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res = SendDataTag(c, sizeof(c), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res != PM3_SUCCESS && recvlen != 3) {
         return PM3_EWRONGANSWER;
     }
@@ -3435,10 +3453,9 @@ static uint32_t write_password_15693_Slix(uint32_t start_time, uint32_t *eof_tim
     AddCrc15(new_pwd_cmd, 16);
 
     start_time = *eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
 
-    int res_wrp = SendDataTag(new_pwd_cmd, sizeof(new_pwd_cmd), false, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res_wrp = SendDataTag(new_pwd_cmd, sizeof(new_pwd_cmd), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res_wrp != PM3_SUCCESS && recvlen != 3) {
         return PM3_EWRONGANSWER;
     }
@@ -3455,10 +3472,9 @@ static uint32_t protect_page_15693_Slix(uint32_t start_time, uint32_t *eof_time,
     AddCrc15(protect_cmd, 13);
 
     start_time = *eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
 
-    int res_wrp = SendDataTag(protect_cmd, sizeof(protect_cmd), false, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res_wrp = SendDataTag(protect_cmd, sizeof(protect_cmd), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res_wrp != PM3_SUCCESS && recvlen != 3) {
         return PM3_EWRONGANSWER;
     }
@@ -3495,10 +3511,9 @@ static uint32_t pass_protect_EASAFI_15693_Slix(uint32_t start_time, uint32_t *eo
     AddCrc15(new_pass_protect_cmd, 3);
 
     start_time = *eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
 
-    int res = SendDataTag(new_pass_protect_cmd, sizeof(new_pass_protect_cmd), false, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res = SendDataTag(new_pass_protect_cmd, sizeof(new_pass_protect_cmd), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res != PM3_SUCCESS && recvlen != 3) {
         return PM3_EWRONGANSWER;
     }
@@ -3531,10 +3546,9 @@ static uint32_t write_afi_15693(uint32_t start_time, uint32_t *eof_time, const u
     AddCrc15(cmd, 11);
 
     start_time = *eof_time + DELAY_ISO15693_VICC_TO_VCD_READER;
-    uint8_t recvbuf[ISO15693_MAX_RESPONSE_LENGTH];
     uint16_t recvlen = 0;
 
-    int res = SendDataTag(cmd, sizeof(cmd), false, true, recvbuf, sizeof(recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
+    int res = SendDataTag(cmd, sizeof(cmd), false, true, s_iso15_recvbuf, sizeof(s_iso15_recvbuf), start_time, ISO15693_READER_TIMEOUT_WRITE, eof_time, &recvlen);
     if (res != PM3_SUCCESS || recvlen != 3) {
         return PM3_EWRONGANSWER;
     }
