@@ -8322,6 +8322,18 @@ static int CmdHF14ADesDump(const char *Cmd) {
         return res;
     }
 
+    // the ISO file id probe in DesfireFillFileList makes the PICC end the session on
+    // applications without ISO file ids, so get it back before reading the files
+    if (noauth == false && DesfireIsAuthenticated(&dctx) == false) {
+        DesfireSetCommMode(&dctx, DCMPlain);
+        res = DesfireSelectAndAuthenticateAppW(&dctx, securechann, selectway, id, noauth, verbose);
+        if (res != PM3_SUCCESS) {
+            DropField();
+            PrintAndLogEx(FAILED, "Select or authentication %s " _RED_("failed") ". Result [%d] %s", DesfireWayIDStr(selectway, id), res, DesfireAuthErrorToStr(res));
+            return res;
+        }
+    }
+
     PrintAndLogEx(NORMAL, "");
     PrintAndLogEx(SUCCESS, "Application " _CYAN_("%s") " have " _GREEN_("%zu") " files", DesfireWayIDStr(selectway, id), filescount);
 

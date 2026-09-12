@@ -2358,7 +2358,12 @@ int DesfireFillFileList(DesfireContext_t *dctx, FileList_t FileList, size_t *fil
     buflen = 0;
     res = DesfireGetFileISOIDList(dctx, buf, &buflen);
     if (res != PM3_SUCCESS) {
-        PrintAndLogEx(WARNING, "Desfire GetFileISOIDList command, res " _RED_("%d"), res);
+        // An application created without ISO file IDs answers 0x91F0 here, and the PICC
+        // ends the authentication on a command error. Drop our side of the session too,
+        // otherwise the next command is still framed as MACed and the plain response to
+        // it gets parsed as a CMAC. Callers that keep using the card re-authenticate.
+        dctx->secureChannel = DACNone;
+        PrintAndLogEx(DEBUG, "Desfire GetFileISOIDList command, res " _RED_("%d") ". Session dropped by the PICC", res);
     }
 
     size_t isoindx = 0;
@@ -2373,7 +2378,7 @@ int DesfireFillFileList(DesfireContext_t *dctx, FileList_t FileList, size_t *fil
         if (isoindx * 2 != buflen)
             PrintAndLogEx(WARNING, "Wrong ISO ID list length. must be %zu but %zu", buflen, isoindx * 2);
     } else {
-        PrintAndLogEx(WARNING, "ISO ID list returned no data");
+        PrintAndLogEx(DEBUG, "ISO ID list returned no data");
     }
 
     *isopresent = (isoindx > 0);
