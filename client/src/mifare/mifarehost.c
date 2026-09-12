@@ -1785,10 +1785,13 @@ uint16_t detect_mf_magic(bool is_mfc, uint8_t key_type, uint64_t key) {
 
     PacketResponseNG resp;
     clearCommandBuffer();
-    uint8_t payload[1 + 1 + MIFARE_KEY_SIZE] = { is_mfc, key_type };
-    num_to_bytes(key, MIFARE_KEY_SIZE, payload + 2);
+    mf_chinese_ident_t payload = {
+        .is_mfc = is_mfc,
+        .keytype = key_type,
+    };
+    num_to_bytes(key, sizeof(payload.key), payload.key);
 
-    SendCommandNG(CMD_HF_MIFARE_CIDENT, payload, sizeof(payload));
+    SendCommandNG(CMD_HF_MIFARE_CIDENT, (uint8_t *)&payload, sizeof(payload));
     if (WaitForResponseTimeout(CMD_HF_MIFARE_CIDENT, &resp, 1500)) {
         if (resp.status != PM3_SUCCESS) {
             return MAGIC_FLAG_NONE;
