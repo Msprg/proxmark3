@@ -598,6 +598,15 @@ typedef struct {
     uint8_t data[];
 } PACKED mf_chinese_blk_t;
 
+// CMD_HF_MIFARE_CIDENT payload.
+// key/keytype are only read when is_mfc is set, but the device reads the whole
+// struct, so senders must always transmit all of it
+typedef struct {
+    uint8_t is_mfc;
+    uint8_t keytype;
+    uint8_t key[6];
+} PACKED mf_chinese_ident_t;
+
 // CMD_HF_MIFARE_GEN3UID payload
 typedef struct {
     uint8_t uidlen;
@@ -1265,6 +1274,15 @@ typedef struct {
     (flags & FLAG_MASK_UID) ==            \
     (len == 4 ? FLAG_4B_UID_IN_DATA : (len == 7 ? FLAG_7B_UID_IN_DATA : (len == 10 ? FLAG_10B_UID_IN_DATA : FLAG_UID_IN_EMUL))))
 #define IS_FLAG_UID_IN_EMUL(flags) ((flags & FLAG_MASK_UID) == FLAG_UID_IN_EMUL)
+
+// CMD_HF_MIFARE_EML_MEMSET flags
+// a whole-dump upload sets this on its first chunk so the device zeroes what was
+// there before writing. A partial update (esetblk) never sets it.
+#define MFEMUL_MEMSET_CLEAR 0x01
+
+// "hf 14a antifuzz" - which flavour of anticollision abuse to run
+#define ANTIFUZZ_MODE_CASCADE   0x00    // grow the reader's UID past cascade level 3
+#define ANTIFUZZ_MODE_COLLISION 0x01    // every answered bit is a collision
 
 // internal constants, use the function macros instead
 #define MIFARE_4K_MAX_BYTES 4096

@@ -22,7 +22,10 @@
 #include "common.h"
 
 #define MAX_FRAME_SIZE          256 // maximum allowed ISO14443 frame
-#define MAX_PARITY_SIZE         ((MAX_FRAME_SIZE + 7) / 8)
+// The 14a demodulator stores 8 parity bits per 8 received bytes and then flushes
+// one more byte once the receive buffer is full, so a full MAX_FRAME_SIZE frame
+// needs (MAX_FRAME_SIZE / 8) + 1 parity bytes, not (MAX_FRAME_SIZE + 7) / 8
+#define MAX_PARITY_SIZE         ((MAX_FRAME_SIZE / 8) + 1)
 #define MAX_MIFARE_FRAME_SIZE   19  // biggest Mifare frame is UL AES answer to AUTH (1 + 16 Bytes) + 2 Bytes CRC
 #define MAX_MIFARE_PARITY_SIZE  3   // need 19 parity bits for the 19 Byte above. 3 Bytes are enough to store these
 #define CARD_MEMORY_SIZE        4096

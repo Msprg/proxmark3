@@ -600,7 +600,9 @@ void Demod14aReset(void) {
 }
 
 void Demod14aInit(uint8_t *d, uint16_t n, uint8_t *par) {
-    Demod.output_len = n;
+    // No ISO14443-A frame can be longer than MAX_FRAME_SIZE (FSD/FSC max out at 256 bytes), 
+    // while callers happily pass PM3_CMD_DATA_SIZE sized receive buffers
+    Demod.output_len = MIN(n, MAX_FRAME_SIZE);
     Demod.output = d;
     Demod.parity = par;
     Demod14aReset();
@@ -718,9 +720,11 @@ RAMFUNC int ManchesterDecoding(uint8_t bit, uint16_t offset, uint32_t non_real_t
 RAMFUNC int ManchesterDecoding_Thinfilm(uint8_t bit, uint32_t non_real_time) {
 
     if (Demod.len == Demod.output_len) {
-        // Flush last parity bits
-        Demod.parityBits <<= (8 - (Demod.len & 0x0007));    // left align remaining parity bits
-        Demod.parity[Demod.parityLen++] = Demod.parityBits; // and store them
+        // Flush last parity bits.  Thinfilm has no parity bits and passes a NULL buffer
+        if (Demod.parity != NULL) {
+            Demod.parityBits <<= (8 - (Demod.len & 0x0007));    // left align remaining parity bits
+            Demod.parity[Demod.parityLen++] = Demod.parityBits; // and store them
+        }
         return true;
     }
 

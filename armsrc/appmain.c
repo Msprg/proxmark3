@@ -2632,12 +2632,11 @@ static void PacketReceived(PacketCommandNG *packet) {
             break;
         }
         case CMD_HF_MIFARE_CIDENT: {
-            struct p {
-                uint8_t is_mfc;
-                uint8_t keytype;
-                uint8_t key[6];
-            } PACKED;
-            struct p *payload = (struct p *) packet->data.asBytes;
+            if (packet->length < sizeof(mf_chinese_ident_t)) {
+                reply_ng(CMD_HF_MIFARE_CIDENT, PM3_EINVARG, NULL, 0);
+                break;
+            }
+            mf_chinese_ident_t *payload = (mf_chinese_ident_t *)packet->data.asBytes;
             MifareCIdent(payload->is_mfc, payload->keytype, payload->key);
             break;
         }

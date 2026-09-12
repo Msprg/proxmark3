@@ -1678,8 +1678,11 @@ static uint64_t ul_magic_test(void) {
     // check for GEN1A, GEN1B and NTAG21x
     PacketResponseNG resp;
     clearCommandBuffer();
-    uint8_t payload[] = { 0 };
-    SendCommandNG(CMD_HF_MIFARE_CIDENT, payload, sizeof(payload));
+    mf_chinese_ident_t payload = {
+        .is_mfc = false,
+        .keytype = MF_KEY_A,
+    };
+    SendCommandNG(CMD_HF_MIFARE_CIDENT, (uint8_t *)&payload, sizeof(payload));
 
     uint16_t is_generation = MAGIC_FLAG_NONE;
     if (WaitForResponseTimeout(CMD_HF_MIFARE_CIDENT, &resp, 1500)) {

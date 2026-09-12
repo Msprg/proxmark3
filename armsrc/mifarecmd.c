@@ -3274,8 +3274,16 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
     uint8_t superGen1[9] = {0x0A, 0x00, 0x00, 0xA6, 0xB0, 0x00, 0x10, 0x14, 0x1D};
     uint8_t uid[10];
     uint8_t *par = BigBuf_calloc(MAX_PARITY_SIZE);
-    uint8_t *buf = BigBuf_calloc(PM3_CMD_DATA_SIZE);
+    uint8_t *buf = BigBuf_calloc(MAX_FRAME_SIZE);
     iso14a_card_select_t *card = (iso14a_card_select_t *) BigBuf_calloc(sizeof(iso14a_card_select_t));
+
+    if (par == NULL || buf == NULL || card == NULL) {
+        if (g_dbglevel >= DBG_ERROR) DbpString("Magic ident: failed to allocate buffers");
+        reply_ng(CMD_HF_MIFARE_CIDENT, PM3_EMALLOC, NULL, 0);
+        switch_off();
+        BigBuf_free();
+        return;
+    }
 
     bool isGen2 = false;
     uint16_t flag = MAGIC_FLAG_NONE;
@@ -3297,13 +3305,13 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
 
         // check for GDM config
         ReaderTransmit(gen4gdmGetConf, sizeof(gen4gdmGetConf), NULL);
-        res = ReaderReceive(buf, PM3_CMD_DATA_SIZE, par);
+        res = ReaderReceive(buf, MAX_FRAME_SIZE, par);
         if (res > 1) {
             // could be ZUID or full USCUID, the magic blocks don't exist on ZUID so
             // a failure here indicates a feature limited chip like ZUID
             // check for GDM hidden block read
             ReaderTransmit(gen4gdmGetMagicBlock, sizeof(gen4gdmGetMagicBlock), NULL);
-            res = ReaderReceive(buf, PM3_CMD_DATA_SIZE, par);
+            res = ReaderReceive(buf, MAX_FRAME_SIZE, par);
             if (res > 1) {
                 flag |= MAGIC_FLAG_GDM_WUP_40;
             } else {
@@ -3320,7 +3328,7 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
         // Get config should return 30 or 32 bytes
         AddCrc14A(gen4GetConf, sizeof(gen4GetConf) - 2);
         ReaderTransmit(gen4GetConf, sizeof(gen4GetConf), NULL);
-        res = ReaderReceive(buf, PM3_CMD_DATA_SIZE, par);
+        res = ReaderReceive(buf, MAX_FRAME_SIZE, par);
         if (res == 32 || res == 34) {
             flag |= MAGIC_FLAG_GEN_4GTU;
         }
@@ -3368,7 +3376,7 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
 
         // test for super card
         ReaderTransmit(superGen1, sizeof(superGen1), NULL);
-        res = ReaderReceive(buf, PM3_CMD_DATA_SIZE, par);
+        res = ReaderReceive(buf, MAX_FRAME_SIZE, par);
         if (res == 22) {
             uint8_t isGen = MAGIC_FLAG_SUPER_GEN1;
 
@@ -3379,7 +3387,7 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
             res = iso14443a_select_card(uid, NULL, &cuid, true, 0, true);
             if (res) {
                 ReaderTransmit(rdbl00, sizeof(rdbl00), NULL);
-                res = ReaderReceive(buf, PM3_CMD_DATA_SIZE, par);
+                res = ReaderReceive(buf, MAX_FRAME_SIZE, par);
                 if (res == 18) {
                     isGen = MAGIC_FLAG_SUPER_GEN2;
                 }
@@ -3395,7 +3403,7 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
         res = iso14443a_select_card(uid, NULL, &cuid, true, 0, true);
         if (res == 2) {
             ReaderTransmit(rdblf0, sizeof(rdblf0), NULL);
-            res = ReaderReceive(buf, PM3_CMD_DATA_SIZE, par);
+            res = ReaderReceive(buf, MAX_FRAME_SIZE, par);
             if (res == 18) {
                 flag |= MAGIC_FLAG_NTAG21X;
             }
@@ -3420,7 +3428,7 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
                 uint64_t tmpkey = bytes_to_num(key, 6);
                 if (mifare_classic_authex(pcs, cuid, 0, keytype, tmpkey, AUTH_FIRST, NULL, NULL) == 0) {
 
-                    if ((mifare_sendcmd_short(pcs, 1, ISO14443A_CMD_WRITEBLOCK, 0, buf, PM3_CMD_DATA_SIZE, par, NULL) == 1) && (buf[0] == 0x0A)) {
+                    if ((mifare_sendcmd_short(pcs, 1, ISO14443A_CMD_WRITEBLOCK, 0, buf, MAX_FRAME_SIZE, par, NULL) == 1) && (buf[0] == 0x0A)) {
                         flag |= MAGIC_FLAG_GEN_2;
                         // turn off immediately to ensure nothing ever accidentally writes to the block
                         FpgaWriteConfWord(FPGA_MAJOR_MODE_OFF);
@@ -3436,7 +3444,7 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
         res = iso14443a_select_card(uid, NULL, &cuid, true, 0, true);
         if (res) {
             ReaderTransmit(rdbl00, sizeof(rdbl00), NULL);
-            res = ReaderReceive(buf, PM3_CMD_DATA_SIZE, par);
+            res = ReaderReceive(buf, MAX_FRAME_SIZE, par);
             if (res == 18) {
                 flag |= MAGIC_FLAG_GEN_3;
             }
@@ -3448,7 +3456,7 @@ void MifareCIdent(bool is_mfc, uint8_t keytype, uint8_t *key) {
         res = iso14443a_select_card(uid, NULL, &cuid, true, 0, true);
         if (res) {
             ReaderTransmit(gen4gdmAuth, sizeof(gen4gdmAuth), NULL);
-            res = ReaderReceive(buf, PM3_CMD_DATA_SIZE, par);
+            res = ReaderReceive(buf, MAX_FRAME_SIZE, par);
             if (res == 4) {
                 flag |= MAGIC_FLAG_GDM_AUTH;
             }
@@ -3765,6 +3773,10 @@ int DoGen3Cmd(uint8_t *cmd, uint8_t cmd_len) {
     int retval = PM3_SUCCESS;
     uint8_t *par = BigBuf_calloc(MAX_PARITY_SIZE);
     uint8_t *buf = BigBuf_calloc(PM3_CMD_DATA_SIZE);
+    if (par == NULL || buf == NULL) {
+        if (g_dbglevel >= DBG_ERROR) DbpString("Gen3 cmd: failed to allocate buffers");
+        return PM3_EMALLOC;
+    }
 
     LED_B_ON();
     uint32_t save_iso14a_timeout = iso14a_get_timeout();
