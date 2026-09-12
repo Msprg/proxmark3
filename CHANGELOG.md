@@ -3,6 +3,8 @@ All notable changes to this project will be documented in this file.
 This project uses the changelog in accordance with [keepchangelog](http://keepachangelog.com/). Please use this to write notable changes, which is not the same as git commit log...
 
 ## [unreleased][unreleased]
+- Added `trace clear` - clears the tracebuffer (@iceman1001)
+- Changed `trace save -1` - now downloads from device by default (@iceman1001)
 - Added `hf 14a antifuzz --coll` - the UID collides from the 9th bit (@iceman1001)
 - Changed `trace list -t 14a` - decodes SEL 0x99..0x9F, shows how many UID bits a bit oriented ANTICOLL claims (@iceman1001)
 - Fixed `hf iclass encode` / `hf iclass tagsim` / `hf mf encodehid` / `lf hid sim` / `lf hid clone` / `lf hid brute` - `--cn` was read with a 32 bit getter, silently truncating card numbers of wide formats like H10302 (@iceman1001)
