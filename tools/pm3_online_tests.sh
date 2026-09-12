@@ -559,8 +559,8 @@ while true; do
       if ! CheckExecute "ATR stable over 5 reads"     "for i in 1 2 3 4 5; do $PM3CMD -c 'smart info' 2>&1 | grep -oE 'ISO7816-3 ATR\.+ [0-9A-F ]+'; done | sort -u | wc -l" "^ *1$"; then break; fi
 
       # any status word will do - the point is that the exchange completed
-      if ! CheckExecute "T=0 apdu gets a status word" "$PM3CMD -c 'smart raw -a -s -0 -d 00a4040007a0000000041010' 2>&1" "\[[+-]\] [0-9A-Fa-f]{4} \|"; then break; fi
-      if ! CheckExecute "T=0 answer stable over 3"    "for i in 1 2 3; do $PM3CMD -c 'smart raw -a -s -0 -d 00a4040007a0000000041010' 2>&1 | grep -oE '^\[[+-]\] [0-9A-Fa-f]{4}'; done | sort -u | wc -l" "^ *1$"; then break; fi
+      if ! CheckExecute "T=0 apdu gets a status word" "$PM3CMD -c 'smart raw --t0 -a -s -d 00a4040007a0000000041010' 2>&1" "\[[+-]\] [0-9A-Fa-f]{4} \|"; then break; fi
+      if ! CheckExecute "T=0 answer stable over 3"    "for i in 1 2 3; do $PM3CMD -c 'smart raw --t0 -a -s -d 00a4040007a0000000041010' 2>&1 | grep -oE '^\[[+-]\] [0-9A-Fa-f]{4}'; done | sort -u | wc -l" "^ *1$"; then break; fi
 
       # loose guard against the 1200 ms per-read wait coming back
       echo -n "  timing three exchanges... "
@@ -574,8 +574,8 @@ while true; do
       if $PM3CMD -c 'smart info' 2>&1 | grep -q "Protocol T1"; then
         echo "  card offers T=1"
         if ! CheckExecute "module reports T=1 support" "$PM3CMD -c 'hw status' 2>&1" "T=1, PPS\.+ \( .*supported"; then break; fi
-        if ! CheckExecute "T=1 apdu gets a status word" "$PM3CMD -c 'smart raw --t1 -s -d 00a4040007a000000004101000' 2>&1" "\[[+-]\] [0-9A-Fa-f]{4} \|"; then break; fi
-        if ! CheckExecute "T=1 answer stable over 3"   "for i in 1 2 3; do $PM3CMD -c 'smart raw --t1 -s -d 00a4040007a000000004101000' 2>&1 | grep -oE '^\[[+-]\] [0-9A-Fa-f]{4}'; done | sort -u | wc -l" "^ *1$"; then break; fi
+        if ! CheckExecute "T=1 apdu gets a status word" "$PM3CMD -c 'smart raw --t1 -d 00a4040007a000000004101000' 2>&1" "\[[+-]\] [0-9A-Fa-f]{4} \|"; then break; fi
+        if ! CheckExecute "T=1 answer stable over 3"   "for i in 1 2 3; do $PM3CMD -c 'smart raw --t1 -d 00a4040007a000000004101000' 2>&1 | grep -oE '^\[[+-]\] [0-9A-Fa-f]{4}'; done | sort -u | wc -l" "^ *1$"; then break; fi
       else
         echo "  card is T=0 only, skipping the T=1 checks"
       fi
