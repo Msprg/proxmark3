@@ -539,6 +539,12 @@ while true; do
       if ! CheckExecute "lf GPROXII test"            "$CLIENTBIN -c 'data load -f traces/lf_GProx_36_30_14489.pm3; lf search -1'" "Guardall G-Prox II ID found"; then break; fi
       if ! CheckExecute "lf HID Prox test"           "$CLIENTBIN -c 'data load -f traces/lf_HID-proxCardII-05512-11432784-1.pm3;lf search -1'" "HID Prox ID found"; then break; fi
       if ! CheckExecute "lf IDTECK test"             "$CLIENTBIN -c 'data load -f traces/lf_IDTECK_4944544BAC40E069.pm3; lf search -1'" "Idteck ID found"; then break; fi
+      if ! CheckExecute "lf IDTECK test 2"           "$CLIENTBIN -c 'data load -f traces/lf_IDTECK_4944544BAC40E069.pm3; lf idteck demod'" \
+                                                              "Card ID 6938688 \( 0x69E040 \) Raw: 4944544BAC40E069"; then break; fi
+      if ! CheckExecute "lf IDTECK raw test"         "$CLIENTBIN -c 'lf idteck demod --raw 4944544B351FBE4B'" \
+                                                              "Card ID 4963871 \( 0x4BBE1F \) Raw: 4944544B351FBE4B"; then break; fi
+      if ! CheckExecute "lf IDTECK reject test"      "if ! $CLIENTBIN -c 'lf idteck demod --raw DEADBEEFDEADBEEF' 2>&1 | grep -q 'IDTECK Tag Found'; then echo OK; fi" "OK"; then break; fi
+      if ! CheckExecute "lf IDTECK no wiegand test"  "if ! $CLIENTBIN -c 'lf idteck demod --raw 4944544B351FBE4B' 2>&1 | grep -q 'H10301'; then echo OK; fi" "OK"; then break; fi
       if ! CheckExecute "lf INDALA test"             "$CLIENTBIN -c 'data load -f traces/lf_Indala-504278295.pm3;lf search -1'" "Indala ID found"; then break; fi
       if ! CheckExecute "lf KERI test"               "$CLIENTBIN -c 'data load -f traces/lf_Keri.pm3;lf search -1'" "Pyramid ID found"; then break; fi
       if ! CheckExecute "lf NEXWATCH test"           "$CLIENTBIN -c 'data load -f traces/lf_NEXWATCH_Quadrakey-521512301.pm3;lf search -1 '" "NexWatch ID found"; then break; fi
