@@ -1789,6 +1789,7 @@ Check column "offline" for their availability.
 |command                  |offline |description
 |-------                  |------- |-----------
 |`trace help             `|Y       |`This help`
+|`trace clear            `|Y       |`Clear the client side trace buffer`
 |`trace extract          `|Y       |`Extract authentication challenges found in trace`
 |`trace list             `|Y       |`List protocol data in trace buffer`
 |`trace load             `|Y       |`Load trace from file`

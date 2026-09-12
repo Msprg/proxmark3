@@ -16271,9 +16271,9 @@
             ],
             "usage": "smart setclock [-h] [--16mhz] [--8mhz] [--4mhz]"
         },
-        "trace help": {
-            "command": "trace help",
-            "description": "help This help extract Extract authentication challenges found in trace list List protocol data in trace buffer load Load trace from file save Save trace buffer to file --------------------------------------------------------------------------------------- trace extract available offline: yes Extracts protocol authentication challenges from trace buffer",
+        "trace extract": {
+            "command": "trace extract",
+            "description": "Extracts protocol authentication challenges from trace buffer",
             "notes": [
                 "trace extract",
                 "trace extract -1"
@@ -16284,6 +16284,18 @@
                 "-1, --buffer use data from trace buffer"
             ],
             "usage": "trace extract [-h1]"
+        },
+        "trace help": {
+            "command": "trace help",
+            "description": "help This help clear Clear the client side trace buffer extract Extract authentication challenges found in trace list List protocol data in trace buffer load Load trace from file save Save trace buffer to file --------------------------------------------------------------------------------------- trace clear available offline: yes Clear the client side trace buffer. That is the buffer `trace load` fills and the `-1` param reads from. It is not the device side trace, see `data clear` for that one",
+            "notes": [
+                "trace clear"
+            ],
+            "offline": true,
+            "options": [
+                "-h, --help This help"
+            ],
+            "usage": "trace clear [-h]"
         },
         "trace list": {
             "command": "trace list",
@@ -16347,16 +16359,18 @@
         },
         "trace save": {
             "command": "trace save",
-            "description": "Save protocol data from trace buffer to binary file File extension is <.trace>",
+            "description": "Save protocol data to binary file By default the trace is downloaded from device. Use `-1` to save the client side trace buffer instead, ie a trace loaded with `trace load` or downloaded by an earlier `trace list` File extension is <.trace>",
             "notes": [
-                "trace save -f mytracefile -> w/o file extension"
+                "trace save -f mytracefile -> download from device, w/o file extension",
+                "trace save -1 -f mytracefile -> use trace buffer"
             ],
             "offline": true,
             "options": [
                 "-h, --help This help",
+                "-1, --buffer use data from trace buffer",
                 "-f, --file <fn> Specify trace file to save"
             ],
-            "usage": "trace save [-h] -f <fn>"
+            "usage": "trace save [-h1] -f <fn>"
         },
         "usart btfactory": {
             "command": "usart btfactory",
@@ -16524,8 +16538,8 @@
         }
     },
     "metadata": {
-        "commands_extracted": 919,
+        "commands_extracted": 920,
         "extracted_by": "PM3Help2JSON v1.00",
-        "extracted_on": "2026-09-12T19:16:35+00:00"
+        "extracted_on": "2026-09-12T19:49:38+00:00"
     }
 }
