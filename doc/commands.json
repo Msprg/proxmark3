@@ -1326,18 +1326,20 @@
         },
         "hf 14a antifuzz": {
             "command": "hf 14a antifuzz",
-            "description": "Tries to fuzz the ISO14443a anticollision phase",
+            "description": "Tries to fuzz the ISO14443a anticollision phase. Default keeps the cascade bit set in every SAK, so the reader asks for one more cascade level until its UID buffer gives up. With --coll only the first UID byte goes out clean and every bit after it collides, so the reader has to resolve 24 bits one round trip at a time; it is then given a BCC that checks out, and the SAK sends it round again one level deeper.",
             "notes": [
-                "hf 14a antifuzz -4"
+                "hf 14a antifuzz -4",
+                "hf 14a antifuzz --10 --coll"
             ],
             "offline": false,
             "options": [
                 "-h, --help This help",
                 "-4 4 byte uid",
                 "-7 7 byte uid",
-                "--10 10 byte uid"
+                "--10 10 byte uid",
+                "--coll collision storm instead of cascade overflow"
             ],
-            "usage": "hf 14a antifuzz [-h47] [--10]"
+            "usage": "hf 14a antifuzz [-h47] [--10] [--coll]"
         },
         "hf 14a apdu": {
             "command": "hf 14a apdu",
@@ -16522,8 +16524,8 @@
         }
     },
     "metadata": {
-        "commands_extracted": 920,
+        "commands_extracted": 919,
         "extracted_by": "PM3Help2JSON v1.00",
-        "extracted_on": "2026-09-12T12:22:55+00:00"
+        "extracted_on": "2026-09-12T19:16:35+00:00"
     }
 }

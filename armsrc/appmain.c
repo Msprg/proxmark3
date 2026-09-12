@@ -2348,9 +2348,12 @@ static void PacketReceived(PacketCommandNG *packet) {
         case CMD_HF_ISO14443A_ANTIFUZZ: {
             struct p {
                 uint8_t flag;
+                uint8_t mode;
             } PACKED;
             struct p *payload = (struct p *) packet->data.asBytes;
-            iso14443a_antifuzz(payload->flag);
+            // older clients only send the flag byte
+            uint8_t mode = (packet->length >= sizeof(struct p)) ? payload->mode : ANTIFUZZ_MODE_CASCADE;
+            iso14443a_antifuzz(payload->flag, mode);
             break;
         }
         // EPA related
