@@ -1338,7 +1338,7 @@ static int CmdHFiClassTagSim(const char *Cmd) {
     wiegand_card_t card;
     memset(&card, 0, sizeof(wiegand_card_t));
     card.FacilityCode = arg_get_u32_def(ctx, 2, 0);
-    card.CardNumber    = arg_get_u32_def(ctx, 3, 0);
+    card.CardNumber    = arg_get_u64_def(ctx, 3, 0);
     card.IssueLevel    = arg_get_u32_def(ctx, 4, 0);
 
     // --- binary string
@@ -7675,7 +7675,7 @@ static int CmdHFiClassEncode(const char *Cmd) {
     memset(&card, 0, sizeof(wiegand_card_t));
 
     card.FacilityCode = arg_get_u32_def(ctx, 8, 0);
-    card.CardNumber = arg_get_u32_def(ctx, 9, 0);
+    card.CardNumber = arg_get_u64_def(ctx, 9, 0);
     card.IssueLevel = arg_get_u32_def(ctx, 10, 0);
 
     char format[16] = {0};

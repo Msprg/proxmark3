@@ -3,6 +3,7 @@ All notable changes to this project will be documented in this file.
 This project uses the changelog in accordance with [keepchangelog](http://keepachangelog.com/). Please use this to write notable changes, which is not the same as git commit log...
 
 ## [unreleased][unreleased]
+- Fixed `hf iclass encode` / `hf iclass tagsim` / `hf mf encodehid` / `lf hid sim` / `lf hid clone` / `lf hid brute` - `--cn` was read with a 32 bit getter, silently truncating card numbers of wide formats like H10302 (@iceman1001)
 - Changed `hf mf eload` - the device now zeroes the emulator memory before the upload (@iceman1001)
 - Fixed `hf mf sim` / `hf 14a sim` - the anticollision responses were prepared in BigBuf before `iso14443a_setup()` (@iceman1001)
 - Changed `CAPABILITIES_VERSION` to 10 - `hf mf eload` sends a flags byte the device did not have before, so client and firmware must be flashed as a pair (@iceman1001)

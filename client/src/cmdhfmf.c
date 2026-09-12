@@ -11256,7 +11256,7 @@ static int CmdHFMFHidEncode(const char *Cmd) {
     wiegand_card_t card;
     memset(&card, 0, sizeof(wiegand_card_t));
     card.FacilityCode = arg_get_u32_def(ctx, 4, 0);
-    card.CardNumber = arg_get_u32_def(ctx, 5, 0);
+    card.CardNumber = arg_get_u64_def(ctx, 5, 0);
 
     char format[16] = {0};
     int format_len = 0;
