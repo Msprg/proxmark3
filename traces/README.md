@@ -62,6 +62,9 @@
 |lf_sniff_ht2-BC3B8810-acg-reader.pm3     |Sniffing of Hitag2 being read by an HID ACG LF Multitag reader|
 |lf_sniff_ht2-BC3B8810-frosch-reader.pm3  |Sniffing of Hitag2 being read by a Frosch Hitag reader|
 |lf_sniff_ht2-BC3B8810-rfidler-reader.pm3 |Sniffing of Hitag2 being read by a RFIDler|
+|lf_ht2_pwd_sniff.trace                   |Sniffing of a genuine Hitag2 in password mode being read by a Paxton reader|
+|lf_ht2_crypto_sniff.trace                |Sniffing of a Hitag2 in crypto mode, showing the NrAr exchange|
+|lf_ht2_pwd_sim.trace                     |`lf hitag sim` answering a Paxton reader in password mode, recorded by the simulating Proxmark|
 
 ## HF traces
 
@@ -124,6 +127,7 @@ mode, so the files differ mainly in that one byte.
 |--------|-----------|
 |lf-hitag-CE129911-dump.bin               |Hitag2 in password mode (config `0x06`), password `BDF5E846`|
 |lf_ht2_crypto.bin                        |Hitag2 in crypto mode (config `0x0E`), key `4F4EBDF5E846`|
+|lf_ht2_crypto_1CAEFD13.bin               |Hitag2 in crypto mode (config `0x0E`)|
 |lf_ht2_publicA.bin                       |Hitag2 in Public Mode A (config `0x02`), Manchester, pages 4-5, carries an EM4102 payload|
 |lf_ht2_publicB.bin                       |Hitag2 in Public Mode B (config `0x00`), biphase 32 T0, pages 4-7|
 |lf_ht2_publicC.bin                       |Hitag2 in Public Mode C (config `0x04`), biphase 64 T0, pages 4-7|
