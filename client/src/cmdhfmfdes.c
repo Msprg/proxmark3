@@ -6428,6 +6428,23 @@ static int CmdHF14ADesDeleteFile(const char *Cmd) {
     return PM3_SUCCESS;
 }
 
+// Which access rights can grant each value file operation. Credit needs read&write
+// only, the others are granted by any of read / write / read&write. The FreeValue
+// option bit makes GetValue free whatever the rights say.
+// Measured on DESFire EV2 hw, `ev1` and `ev2` secure channels.
+static DesfireCommunicationMode DesfireValueOpCommMode(DesfireContext_t *dctx, const FileSettings_t *fsettings, uint8_t vop) {
+    if (vop == MFDES_GET_VALUE && (fsettings->limitedCredit & 0x02) != 0)
+        return DCMPlain;
+
+    if (vop == MFDES_CREDIT) {
+        const uint8_t rwonly[] = { fsettings->rwAccess };
+        return DesfireEffectiveCommMode(dctx, fsettings->commMode, rwonly, ARRAYLEN(rwonly));
+    }
+
+    const uint8_t anyright[] = { fsettings->rAccess, fsettings->wAccess, fsettings->rwAccess };
+    return DesfireEffectiveCommMode(dctx, fsettings->commMode, anyright, ARRAYLEN(anyright));
+}
+
 static int CmdHF14ADesValueOperations(const char *Cmd) {
     CLIParserContext *ctx;
     CLIParserInit(&ctx, "hf mfdes value",
@@ -6509,19 +6526,51 @@ static int CmdHF14ADesValueOperations(const char *Cmd) {
     if (verbose)
         PrintAndLogEx(INFO, "%s file %02x operation: %s value: 0x%08x", DesfireWayIDStr(selectway, id), fileid, CLIGetOptionListStr(DesfireValueFileOperOpts, op), value);
 
+    // the PICC picks the communication mode from the file settings and the access rights,
+    // so read them instead of guessing from the command line
+    FileSettings_t fsettings = {0};
+    bool havesettings = false;
+
+    DesfireCommunicationMode chmode = dctx.commMode;
+    DesfireSetCommMode(&dctx, DCMMACed);
+    res = DesfireFileSettingsStruct(&dctx, fileid, &fsettings);
+    DesfireSetCommMode(&dctx, chmode);
+
+    if (res == PM3_SUCCESS) {
+        havesettings = true;
+
+        if (fsettings.fileType != 0x02) {
+            PrintAndLogEx(WARNING, "File %02x is " _RED_("not") " a value file, got %s", fileid, GetDesfireFileType(fsettings.fileType));
+        }
+
+        if (verbose) {
+            PrintAndLogEx(INFO, "Value file %02x comm mode: %s", fileid, CLIGetOptionListStr(DesfireCommunicationModeOpts, fsettings.commMode));
+        }
+
+    } else {
+        PrintAndLogEx(WARNING, "GetFileSettings error. Can't get the file communication mode.");
+    }
+
     if (op != 0xff) {
+        if (havesettings) {
+            DesfireSetCommMode(&dctx, DesfireValueOpCommMode(&dctx, &fsettings, op));
+        }
+
         res = DesfireValueFileOperations(&dctx, fileid, op, &value);
         if (res != PM3_SUCCESS) {
             PrintAndLogEx(ERR, "Desfire ValueFileOperations (0x%02x) command ( " _RED_("error") " ) Result: %d", op, res);
             DropField();
             return PM3_ESOFT;
         }
-        if (verbose)
+
+        if (verbose) {
             PrintAndLogEx(INFO, "Operation ( %s )" _GREEN_("ok"), CLIGetOptionListStr(DesfireValueFileOperOpts, op));
+        }
 
         if (op == MFDES_GET_VALUE) {
             PrintAndLogEx(SUCCESS, "Value: " _GREEN_("%d (0x%08x)"), value, value);
         } else {
+
             DesfireSetCommMode(&dctx, DCMMACed);
             res = DesfireCommitTransaction(&dctx, false, 0);
             if (res != PM3_SUCCESS) {
@@ -6529,44 +6578,32 @@ static int CmdHF14ADesValueOperations(const char *Cmd) {
                 DropField();
                 return PM3_ESOFT;
             }
-            if (verbose)
+
+            if (verbose) {
                 PrintAndLogEx(INFO, "Commit ( " _GREEN_("ok") " )");
+            }
 
             PrintAndLogEx(SUCCESS, "Value changed " _GREEN_("successfully"));
         }
     } else {
-        DesfireCommunicationMode fileCommMode = dctx.commMode;
+        if (havesettings == false || fsettings.fileType != 0x02) {
+            PrintAndLogEx(ERR, "Need the value file settings to clear it");
+            DropField();
+            return PM3_ESOFT;
+        }
 
+        DesfireSetCommMode(&dctx, DesfireValueOpCommMode(&dctx, &fsettings, MFDES_GET_VALUE));
         res = DesfireValueFileOperations(&dctx, fileid, MFDES_GET_VALUE, &value);
         if (res != PM3_SUCCESS) {
             PrintAndLogEx(ERR, "Desfire GetValue command ( " _RED_("error") ") Result: %d", res);
             DropField();
             return PM3_ESOFT;
         }
-        if (verbose)
+        if (verbose) {
             PrintAndLogEx(INFO, _YELLOW_("GetValue") " command is " _GREEN_("ok") ". Current value: 0x%08x", value);
-
-        uint8_t buf[250] = {0};
-        size_t buflen = 0;
-
-        DesfireSetCommMode(&dctx, DCMMACed);
-        res = DesfireGetFileSettings(&dctx, fileid, buf, &buflen);
-        if (res != PM3_SUCCESS) {
-            PrintAndLogEx(ERR, "Desfire GetFileSettings command ( " _RED_("error") " ) Result: %d", res);
-            DropField();
-            return PM3_ESOFT;
         }
 
-        if (verbose)
-            PrintAndLogEx(INFO, _YELLOW_("GetFileSettings") " is " _GREEN_("ok") " . File settings[%zu]: %s", buflen, sprint_hex(buf, buflen));
-
-        if (buflen < 8 || buf[0] != 0x02) {
-            PrintAndLogEx(ERR, "Desfire GetFileSettings command returns " _RED_("wrong") " data");
-            DropField();
-            return PM3_ESOFT;
-        }
-
-        int32_t minvalue = (int)MemLeToUint4byte(&buf[4]);
+        int32_t minvalue = (int)fsettings.lowerLimit;
         uint32_t delta = ((int64_t)value > minvalue) ? value - minvalue : 0;
         if (verbose) {
             PrintAndLogEx(INFO, "value: 0x%08x (%d)", value, value);
@@ -6575,10 +6612,11 @@ static int CmdHF14ADesValueOperations(const char *Cmd) {
         }
 
         if (delta > 0) {
-            DesfireSetCommMode(&dctx, fileCommMode);
+            DesfireSetCommMode(&dctx, DesfireValueOpCommMode(&dctx, &fsettings, MFDES_DEBIT));
 
             uint32_t maxdelta = 0x7fffffff;
             if (delta > maxdelta) {
+
                 res = DesfireValueFileOperations(&dctx, fileid, MFDES_DEBIT, &maxdelta);
                 if (res != PM3_SUCCESS) {
                     PrintAndLogEx(ERR, "Desfire Debit maxdelta operation ( " _RED_("error") " ) Result: %d", res);
@@ -6600,8 +6638,9 @@ static int CmdHF14ADesValueOperations(const char *Cmd) {
                 return PM3_ESOFT;
             }
 
-            if (verbose)
+            if (verbose) {
                 PrintAndLogEx(INFO, "Value debited " _GREEN_("ok"));
+            }
 
             DesfireSetCommMode(&dctx, DCMMACed);
             res = DesfireCommitTransaction(&dctx, false, 0);
@@ -6611,11 +6650,13 @@ static int CmdHF14ADesValueOperations(const char *Cmd) {
                 return PM3_ESOFT;
             }
 
-            if (verbose)
+            if (verbose) {
                 PrintAndLogEx(INFO, "Transaction :" _GREEN_("committed"));
+            }
         } else {
-            if (verbose)
+            if (verbose) {
                 PrintAndLogEx(INFO, "Nothing to clear. Value already in the minimum level.");
+            }
         }
 
         PrintAndLogEx(SUCCESS, "Value cleared " _GREEN_("successfully"));
@@ -7376,14 +7417,18 @@ static int DesfileReadFileAndPrint(DesfireContext_t *dctx,
                 }
             }
 
-            commMode = fsettings.commMode;
+            // free access (0x0e) makes the PICC answer in plain, whatever the file comm mode is
+            if (filetype == RFTValue) {
+                commMode = DesfireValueOpCommMode(dctx, &fsettings, MFDES_GET_VALUE);
+            } else {
+                const uint8_t rrights[] = { fsettings.rAccess, fsettings.rwAccess };
+                commMode = DesfireEffectiveCommMode(dctx, fsettings.commMode, rrights, ARRAYLEN(rrights));
+            }
+
             // lrp needs to point exact mode
             if (dctx->secureChannel == DACLRP) {
                 // read right == free
                 if (fsettings.rAccess == 0xe)
-                    commMode = DCMPlain;
-                // get value access == free
-                if (filetype == RFTValue && (fsettings.limitedCredit & 0x02) != 0)
                     commMode = DCMPlain;
             }
 
@@ -7407,7 +7452,7 @@ static int DesfileReadFileAndPrint(DesfireContext_t *dctx,
                 PrintAndLogEx(INFO, _CYAN_("File type:") " %s  Option: %s  comm mode: %s",
                               GetDesfireFileType(fsettings.fileType),
                               CLIGetOptionListStr(DesfireReadFileTypeOpts, filetype),
-                              CLIGetOptionListStr(DesfireCommunicationModeOpts, fsettings.commMode)
+                              CLIGetOptionListStr(DesfireCommunicationModeOpts, commMode)
                              );
             }
         } else {
@@ -7859,8 +7904,9 @@ static int CmdHF14ADesWriteData(const char *Cmd) {
         return res;
     }
 
-    // get file settings
-    if (op == RFTAuto) {
+    // get file settings. Needed for the file type in `auto` mode, and always for the
+    // communication mode the PICC expects for this operation
+    {
         FileSettings_t fsettings;
 
         DesfireCommunicationMode commMode = dctx.commMode;
@@ -7869,38 +7915,46 @@ static int CmdHF14ADesWriteData(const char *Cmd) {
         DesfireSetCommMode(&dctx, commMode);
 
         if (res == PM3_SUCCESS) {
-            switch (fsettings.fileType) {
-                case 0x00:
-                case 0x01: {
-                    op = RFTData;
-                    if (!commit)
-                        commit = (fsettings.fileType == 0x01);
-                    break;
-                }
-                case 0x02: {
-                    op = RFTValue;
-                    commit = true;
-                    break;
-                }
-                case 0x03:
-                case 0x04: {
-                    op = RFTRecord;
-                    commit = true;
-                    if (datalen > fsettings.recordSize)
-                        PrintAndLogEx(WARNING, "Record size (%d) " _RED_("is less") " than data length (%d)", fsettings.recordSize, datalen);
-                    break;
-                }
-                case 0x05: {
-                    op = RFTMAC;
-                    commit = false;
-                    break;
-                }
-                default: {
-                    break;
+            if (op == RFTAuto) {
+                switch (fsettings.fileType) {
+                    case 0x00:
+                    case 0x01: {
+                        op = RFTData;
+                        if (!commit)
+                            commit = (fsettings.fileType == 0x01);
+                        break;
+                    }
+                    case 0x02: {
+                        op = RFTValue;
+                        commit = true;
+                        break;
+                    }
+                    case 0x03:
+                    case 0x04: {
+                        op = RFTRecord;
+                        commit = true;
+                        if (datalen > fsettings.recordSize)
+                            PrintAndLogEx(WARNING, "Record size (%d) " _RED_("is less") " than data length (%d)", fsettings.recordSize, datalen);
+                        break;
+                    }
+                    case 0x05: {
+                        op = RFTMAC;
+                        commit = false;
+                        break;
+                    }
+                    default: {
+                        break;
+                    }
                 }
             }
 
-            DesfireSetCommMode(&dctx, fsettings.commMode);
+            // free access (0x0e) makes the PICC expect the command in plain, whatever the file comm mode is
+            if (op == RFTValue) {
+                DesfireSetCommMode(&dctx, DesfireValueOpCommMode(&dctx, &fsettings, (debit) ? MFDES_DEBIT : MFDES_CREDIT));
+            } else {
+                const uint8_t wrights[] = { fsettings.wAccess, fsettings.rwAccess };
+                DesfireSetCommMode(&dctx, DesfireEffectiveCommMode(&dctx, fsettings.commMode, wrights, ARRAYLEN(wrights)));
+            }
 
             if (fsettings.fileCommMode != 0 && noauth)
                 PrintAndLogEx(WARNING, "File needs communication mode `%s` but there is no authentication", CLIGetOptionListStr(DesfireCommunicationModeOpts, fsettings.commMode));
@@ -7915,7 +7969,7 @@ static int CmdHF14ADesWriteData(const char *Cmd) {
                 PrintAndLogEx(INFO, "Got file type: %s. Option: %s. comm mode: %s",
                               GetDesfireFileType(fsettings.fileType),
                               CLIGetOptionListStr(DesfireReadFileTypeOpts, op),
-                              CLIGetOptionListStr(DesfireCommunicationModeOpts, fsettings.commMode));
+                              CLIGetOptionListStr(DesfireCommunicationModeOpts, dctx.commMode));
         } else {
             PrintAndLogEx(WARNING, "GetFileSettings error. Can't get file type.");
         }

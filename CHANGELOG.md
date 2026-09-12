@@ -3,6 +3,9 @@ All notable changes to this project will be documented in this file.
 This project uses the changelog in accordance with [keepchangelog](http://keepachangelog.com/). Please use this to write notable changes, which is not the same as git commit log...
 
 ## [unreleased][unreleased]
+- Fixed `hf mfdes read` / `hf mfdes write` - a file whose access right is free (0x0E) is served in plain by the PICC (@iceman1001)
+- Fixed `hf mfdes value` - credit/debit/limitedcredit used a fixed comm mode, now look on card (@iceman1001)
+- Fixed `hf mfdes value -o get` / `hf mfdes dump` - a value file read in the wrong comm mode printed a silently wrong value instead of failing (@iceman1001)
 - Fixed `lf idteck demod` - without `--raw` it decoded a zeroed stack buffer instead of the graphbuffer, always reporting card id 0 (@mfcarroll)
 - Fixed `lf idteck demod` - a raw frame without the Idteck preamble printed `No genuine IDTECK found` and then announced a tag anyway (@mfcarroll)
 - Changed `lf idteck demod` - no longer prints an HID H10301 credential built from the Idteck card id (@mfcarroll)
