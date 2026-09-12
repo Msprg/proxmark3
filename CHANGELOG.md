@@ -3,6 +3,7 @@ All notable changes to this project will be documented in this file.
 This project uses the changelog in accordance with [keepchangelog](http://keepachangelog.com/). Please use this to write notable changes, which is not the same as git commit log...
 
 ## [unreleased][unreleased]
+- Changed `tools/pm3_online_tests.sh desfire_value` - the plain/mac assertion pairs sent byte identical APDUs (@iceman1001)
 - Fixed `smart raw --t1` - a card runs the protocol its ATR names until a PPS changes it (@iceman1001)
 - Fixed `tools/pm3_online_tests.sh smartcard` - the T=0 checks used the non existent `-0` flag (@iceman1001)
 - Fixed `hf mfdes dump` - the ISO file id probe ends the PICC session on applications without ISO file ids (@iceman1001)

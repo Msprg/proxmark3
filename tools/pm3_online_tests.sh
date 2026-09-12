@@ -410,19 +410,55 @@ while true; do
       
       echo "  Formatting card to clean state..."
       if ! CheckExecute "format card"                  "$PM3BIN -c 'hf mfdes formatpicc'" "done"; then break; fi
-      
-      echo "  Running value operation tests..."
+
+      # The PICC serves a file in plain whenever access is granted by the free
+      # access right (0x0E) instead of by a key we hold, whatever the file
+      # communication mode says. The client has to work that out per operation,
+      # so every file below is a different answer to it. No -m flags on purpose:
+      # the point is that the client derives the mode, not that we ask for one.
+      echo "  Building the fixture..."
       if ! CheckExecute "card auth test"          "$PM3BIN -c 'hf mfdes auth -n 0 -t 2tdea -k 00000000000000000000000000000000 --kdf none'" "authenticated.*succes"; then break; fi
-      if ! CheckExecute "card app creation"       "$PM3BIN -c 'hf mfdes createapp --aid 123456 --ks1 0F --ks2 0E --numkeys 1'" "successfully created"; then break; fi
-      if ! CheckExecute "card value file creation" "$PM3BIN -c 'hf mfdes createvaluefile --aid 123456 --fid 02 --lower 00000000 --upper 000003E8 --value 00000064'" "created successfully"; then break; fi
-      if ! CheckExecute "card value get plain"    "$PM3BIN -c 'hf mfdes value --aid 123456 --fid 02 --op get -m plain'" "Value.*100"; then break; fi
-      if ! CheckExecute "card value get mac"      "$PM3BIN -c 'hf mfdes value --aid 123456 --fid 02 --op get -m mac'" "Value.*100"; then break; fi
-      if ! CheckExecute "card value credit plain" "$PM3BIN -c 'hf mfdes value --aid 123456 --fid 02 --op credit -d 00000032 -m plain'" "Value.*changed"; then break; fi
-      if ! CheckExecute "card value get after credit" "$PM3BIN -c 'hf mfdes value --aid 123456 --fid 02 --op get -m plain'" "Value.*150"; then break; fi
-      if ! CheckExecute "card value credit mac"   "$PM3BIN -c 'hf mfdes value --aid 123456 --fid 02 --op credit -d 0000000A -m mac'" "Value.*changed"; then break; fi
-      if ! CheckExecute "card value debit plain"  "$PM3BIN -c 'hf mfdes value --aid 123456 --fid 02 --op debit -d 00000014 -m plain'" "Value.*changed"; then break; fi
-      if ! CheckExecute "card value debit mac"    "$PM3BIN -c 'hf mfdes value --aid 123456 --fid 02 --op debit -d 00000014 -m mac'" "Value.*changed"; then break; fi
-      if ! CheckExecute "card value final check"  "$PM3BIN -c 'hf mfdes value --aid 123456 --fid 02 --op get -m mac'" "Value.*120"; then break; fi
+      if ! CheckExecute "card app creation"       "$PM3BIN -c 'hf mfdes createapp --aid 123456 --ks1 0F --dstalgo aes --numkeys 2'" "successfully created"; then break; fi
+
+      # data files: free vs key protected, in each communication mode
+      for F in "00 mac EEEE" "01 mac 0000" "02 encrypt EEEE" "03 encrypt 0000"; do
+        set -- $F
+        if ! CheckExecute "data file $1 $2 $3 created" "$PM3BIN -c 'hf mfdes createfile --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid $1 --amode $2 --size 000008 --rawrights $3'" "created successfully"; then break 2; fi
+      done
+
+      # value files. 10 is the discriminating one: credit is granted by
+      # read&write only, which is free here, while debit is also granted by the
+      # write right, which is key 0 - so credit goes plain and debit goes MAC on
+      # the same file in the same session. 13 has the FreeValue option, which
+      # makes GetValue plain on an otherwise fully enciphered file.
+      if ! CheckExecute "value file 10 mac 00E0 created"   "$PM3BIN -c 'hf mfdes createvaluefile --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid 10 --amode mac --rawrights 00E0 --lower 00000000 --upper 000003E8 --value 00000064'" "created successfully"; then break; fi
+      if ! CheckExecute "value file 11 mac 0000 created"   "$PM3BIN -c 'hf mfdes createvaluefile --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid 11 --amode mac --rawrights 0000 --lower 00000000 --upper 000003E8 --value 00000064'" "created successfully"; then break; fi
+      if ! CheckExecute "value file 12 plain EEEE created" "$PM3BIN -c 'hf mfdes createvaluefile --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid 12 --amode plain --rawrights EEEE --lower 00000000 --upper 000003E8 --value 00000064'" "created successfully"; then break; fi
+      if ! CheckExecute "value file 13 enc FreeValue created" "$PM3BIN -c 'hf mfdes createvaluefile --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid 13 --amode encrypt --rawrights 0000 --lcredit 3 --lower 00000000 --upper 000003E8 --value 00000064'" "created successfully"; then break; fi
+
+      echo "  Running data file tests..."
+      for F in 00 01 02 03; do
+        if ! CheckExecute "data file $F write"      "$PM3BIN -c 'hf mfdes write --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid $F -d A0A1A2A3A4A5A6$F'" "Write data file $F success"; then break 2; fi
+        if ! CheckExecute "data file $F read back"  "$PM3BIN -c 'hf mfdes read --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid $F'" "A0 A1 A2 A3 A4 A5 A6 $F"; then break 2; fi
+      done
+
+      # the app has no ISO file ids, so the client's GetISOFileIDs probe is
+      # refused and the PICC ends the session on it. dump has to notice, or it
+      # reads the first file's plain content as a response CMAC and loses it.
+      if ! CheckExecute "dump keeps the session"   "$PM3BIN -c 'hf mfdes dump --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000'" "A0 A1 A2 A3 A4 A5 A6 00"; then break; fi
+
+      echo "  Running value operation tests..."
+      for F in 10 11 12; do
+        if ! CheckExecute "value file $F get"       "$PM3BIN -c 'hf mfdes value --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid $F --op get'" "Value: 100 \\(0x00000064\\)"; then break 2; fi
+        if ! CheckExecute "value file $F credit"    "$PM3BIN -c 'hf mfdes value --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid $F --op credit -d 00000032'" "Value changed"; then break 2; fi
+        if ! CheckExecute "value file $F debit"     "$PM3BIN -c 'hf mfdes value --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid $F --op debit -d 00000014'" "Value changed"; then break 2; fi
+        if ! CheckExecute "value file $F final"     "$PM3BIN -c 'hf mfdes value --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid $F --op get'" "Value: 130 \\(0x00000082\\)"; then break 2; fi
+      done
+
+      if ! CheckExecute "value file 13 FreeValue get" "$PM3BIN -c 'hf mfdes value --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid 13 --op get'" "Value: 100 \\(0x00000064\\)"; then break; fi
+      if ! CheckExecute "value file 13 credit"        "$PM3BIN -c 'hf mfdes value --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid 13 --op credit -d 00000032'" "Value changed"; then break; fi
+      if ! CheckExecute "value file 13 final"         "$PM3BIN -c 'hf mfdes value --aid 123456 -n 0 -t aes -k 00000000000000000000000000000000 --fid 13 --op get'" "Value: 150 \\(0x00000096\\)"; then break; fi
+
       if ! CheckExecute "card cleanup"            "$PM3BIN -c 'hf mfdes selectapp --aid 000000; hf mfdes auth -n 0 -t 2tdea -k 00000000000000000000000000000000 --kdf none; hf mfdes deleteapp --aid 123456'" "application.*deleted"; then break; fi
       echo "  card value operation tests completed successfully!"
     fi
