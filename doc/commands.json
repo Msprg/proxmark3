@@ -11134,6 +11134,19 @@
             ],
             "usage": "hw lcdreset [-h]"
         },
+        "hw lowpower": {
+            "command": "hw lowpower",
+            "description": "Toggle the PM5 low-power idle. Default is on: between commands the core drops from 288 to 48 MHz with the PLL off, the FPGA clock stopped and the CPU halted (WFI) until the next USB / BWM / button event. Commands and the BWM housekeeping always run at full speed. Turn it off to get the old always-288 MHz busy loop back, e.g. when chasing a timing problem. Runtime only: resets to on at each boot. See `hw status` for the idle stats.",
+            "notes": [
+                "hw lowpower off -> stay at 288 MHz, no idle sleep",
+                "hw lowpower on -> re-enable the low-power idle"
+            ],
+            "offline": false,
+            "options": [
+                "-h, --help This help"
+            ],
+            "usage": "hw lowpower [-h]"
+        },
         "hw ping": {
             "command": "hw ping",
             "description": "Test if the Proxmark3 is responsive",
@@ -16538,7 +16551,7 @@
         }
     },
     "metadata": {
-        "commands_extracted": 920,
+        "commands_extracted": 921,
         "extracted_by": "PM3Help2JSON v1.00",
         "extracted_on": "2026-09-12T19:49:38+00:00"
     }

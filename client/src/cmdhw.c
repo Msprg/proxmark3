@@ -2033,6 +2033,51 @@ static int CmdPM5QCTest(const char *Cmd) {
 }
 
 
+static int CmdLowPower(const char *Cmd) {
+    // Positional sub-action (no dashes): hw lowpower on | off
+    char verb[16] = {0};
+    sscanf(Cmd, "%15s", verb);
+    bool on  = (strcmp(verb, "on")  == 0);
+    bool off = (strcmp(verb, "off") == 0);
+
+    if (!on && !off) {
+        CLIParserContext *ctx;
+        CLIParserInit(&ctx, "hw lowpower",
+                      "Toggle the PM5 low-power idle. Default is " _GREEN_("on") ": between commands the\n"
+                      "core drops from 288 to 48 MHz with the PLL off, the FPGA clock stopped and the\n"
+                      "CPU halted (WFI) until the next USB / BWM / button event. Commands and the BWM\n"
+                      "housekeeping always run at full speed. Turn it off to get the old always-288 MHz\n"
+                      "busy loop back, e.g. when chasing a timing problem.\n"
+                      _YELLOW_("Runtime only:") " resets to on at each boot. See `hw status` for the idle stats.",
+                      "hw lowpower off   --> stay at 288 MHz, no idle sleep\n"
+                      "hw lowpower on    --> re-enable the low-power idle");
+        void *argtable[] = {
+            arg_param_begin,
+            arg_param_end
+        };
+        CLIExecWithReturn(ctx, Cmd, argtable, true);
+        CLIParserFree(ctx);
+        PrintAndLogEx(WARNING, "specify " _YELLOW_("on") " or " _YELLOW_("off"));
+        return PM3_EINVARG;
+    }
+
+    uint8_t payload = off ? 0 : 1;   // on -> 1 (enable), off -> 0 (disable)
+
+    clearCommandBuffer();
+    SendCommandNG(CMD_PM5_LOWPOWER, &payload, sizeof(payload));
+    PacketResponseNG resp;
+    if (WaitForResponseTimeout(CMD_PM5_LOWPOWER, &resp, 2500) == false) {
+        PrintAndLogEx(WARNING, "command timeout (is this a PM5?)");
+        return PM3_ETIMEOUT;
+    }
+    if (resp.status != PM3_SUCCESS) {
+        PrintAndLogEx(FAILED, "failed to set low-power idle");
+        return resp.status;
+    }
+    PrintAndLogEx(SUCCESS, "Low-power idle %s.", payload ? _GREEN_("enabled") : _YELLOW_("disabled"));
+    return PM3_SUCCESS;
+}
+
 static command_t CommandTable[] = {
     {"help", CmdHelp, AlwaysAvailable, "This help"},
     {"-------------", CmdHelp, AlwaysAvailable, "----------------------- " _CYAN_("Operation") " -----------------------"},
@@ -2053,6 +2098,7 @@ static command_t CommandTable[] = {
     {"factorydata", CmdDeviceFactoryData, IfI2cEeprom, "Get/Set the factory data for Device"},
     {"lcd", CmdLCD, IfPm3Lcd, "Send command/data to LCD"},
     {"lcdreset", CmdLCDReset, IfPm3Lcd, "Hardware reset LCD"},
+    {"lowpower", CmdLowPower, IfPm5, "Enable/disable the PM5 low-power idle"},
     {"ping", CmdPing, IfPm3Present, "Test if the Proxmark3 is responsive"},
     {"readmem", CmdReadmem, IfPm3Present, "Read from MCU flash"},
     {"reset", CmdReset, IfPm3Present, "Reset the device"},

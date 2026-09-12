@@ -3,6 +3,7 @@ All notable changes to this project will be documented in this file.
 This project uses the changelog in accordance with [keepchangelog](http://keepachangelog.com/). Please use this to write notable changes, which is not the same as git commit log...
 
 ## [unreleased][unreleased]
+- Added `hw lowpower` - PM5 low-power idle, on by default: between commands the core drops to 48 MHz with the PLL off, the FPGA clock stopped and the CPU halted (WFI); USB now runs crystal-less off HICK. Ported from the Fantasi firmware (@Msprg)
 - Added `vigik_recover_pk.py` - recover public keys from RSA signatures (@iceman1001)
 - Fixed `hf mf autopwn` - a sector that cannot be cracked no longer discards the keys already recovered (@iceman1001)
 - Fixed `hf mf nested` - a NAK from the tag now ends the nonce collection instead of retrying until the client times out (@iceman1001)

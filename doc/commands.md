@@ -1022,6 +1022,7 @@ Check column "offline" for their availability.
 |`hw factorydata         `|N       |`Get/Set the factory data for Device`
 |`hw lcd                 `|N       |`Send command/data to LCD`
 |`hw lcdreset            `|N       |`Hardware reset LCD`
+|`hw lowpower            `|N       |`Enable/disable the PM5 low-power idle`
 |`hw ping                `|N       |`Test if the Proxmark3 is responsive`
 |`hw readmem             `|N       |`Read from MCU flash`
 |`hw reset               `|N       |`Reset the device`
