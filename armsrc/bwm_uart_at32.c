@@ -55,12 +55,12 @@ static volatile uint32_t s_cur_baud = BWM_UART_BAUD;
 
 // ESP light sleep (Proxmark5_BWM_esp32 with CONFIG_FREERTOS_USE_TICKLESS_IDLE):
 // the module goes to light sleep BWM_ESP_AWAKE_MS after the last byte in either
-// direction. Its UART wakes it on RX edges but the bytes carrying those edges
+// direction (we only track our own TX, see bwm_uart_read). Its UART wakes it on RX edges but the bytes carrying those edges
 // are lost, so after that much silence on our side we lead with a disposable
 // preamble and let the module come up before the real frame. Harmless to ESP
 // firmware without light sleep: its parser discards bytes until a frame header.
-#define BWM_ESP_AWAKE_MS        5000   // == UART_LINK_AWAKE_MS on the ESP
-#define BWM_ESP_WAKE_AFTER_MS   3000   // preamble when quiet longer than this (margin for drift)
+#define BWM_ESP_AWAKE_MS        2000   // == UART_LINK_AWAKE_MS on the ESP
+#define BWM_ESP_WAKE_AFTER_MS   1000   // preamble when quiet longer than this (margin for drift)
 #define BWM_ESP_WAKE_SETTLE_MS  10     // light-sleep exit + UART driver back up
 static volatile uint32_t s_last_traffic_tick = 0;
 
@@ -203,8 +203,9 @@ uint32_t bwm_uart_read(uint8_t *data, size_t len) {
         data[n++] = s_rx_ring[s_rx_tail];
         s_rx_tail = (uint16_t)((s_rx_tail + 1) & (BWM_RX_RING_SZ - 1));
     }
-    if (n > 0) {
-        s_last_traffic_tick = GetTickCount();   // the ESP is awake: it just talked
-    }
+    // RX does not refresh s_last_traffic_tick: bytes are stamped when the ring
+    // is drained, which can be long after the ESP sent them (a busy HF/LF
+    // command), so they say nothing reliable about the ESP's own awake window.
+    // A redundant preamble costs four bytes and 10 ms; a missing one loses the frame.
     return n;
 }
