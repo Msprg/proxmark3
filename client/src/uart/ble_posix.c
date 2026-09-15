@@ -79,6 +79,20 @@ static int att_read_pdu(int fd, uint8_t *buf, size_t maxlen, int timeout_ms) {
     return (int)n;
 }
 
+// Answer the one server-side request we must not ignore. A peripheral may send
+// its own Exchange MTU Request (older BWM firmware did, right at connect); a
+// GATT client that never answers it trips the peer's 30 s ATT transaction
+// timeout, which NimBLE handles by dropping the link. Reply with our RX MTU.
+// Everything else unsolicited (notifications before we subscribed, indications)
+// is safe to skip.
+static void att_answer_unsolicited(int fd, const uint8_t *pdu, int n) {
+    if (n >= 3 && pdu[0] == ATT_OP_MTU_REQ) {
+        uint8_t rsp[3] = { ATT_OP_MTU_RSP, 0, 0 };
+        put16(&rsp[1], ATT_PREFERRED_MTU);
+        (void)att_write_pdu(fd, rsp, sizeof(rsp));
+    }
+}
+
 // Send a request PDU and read PDUs until we get one starting with want_op (or an
 // ATT error). Notifications that arrive early are ignored here (discovery runs
 // before we subscribe, so none are expected). Returns rsp length or -1.
@@ -90,7 +104,7 @@ static int att_txn(int fd, const uint8_t *req, size_t reqlen, uint8_t want_op,
         if (n <= 0) return -1;
         if (rsp[0] == want_op) return n;
         if (rsp[0] == ATT_OP_ERROR) return -1;   // caller decides meaning
-        // ignore anything unexpected and keep reading
+        att_answer_unsolicited(fd, rsp, n);      // then keep reading
     }
     return -1;
 }
@@ -476,8 +490,10 @@ int ble_recv(ble_conn_t *conn, uint8_t *buf, size_t maxlen, size_t *out_len, int
         int n = att_read_pdu(conn->fd, pdu, sizeof(pdu), timeout_ms);
         if (n < 0) { *out_len = got; return (got > 0) ? 0 : -1; }
         if (n == 0) break;                                  // real timeout / no more
-        if ((pdu[0] != ATT_OP_HANDLE_NOTIFY && pdu[0] != ATT_OP_HANDLE_INDICATE) || n < 3)
-            continue;                                       // ignore non-notifications
+        if ((pdu[0] != ATT_OP_HANDLE_NOTIFY && pdu[0] != ATT_OP_HANDLE_INDICATE) || n < 3) {
+            att_answer_unsolicited(conn->fd, pdu, n);       // MTU request from the peer
+            continue;                                       // ignore other non-notifications
+        }
         if (get16(&pdu[1]) != conn->val_handle) continue;   // not our char
         const uint8_t *val = &pdu[3];
         size_t vlen = (size_t)n - 3;
