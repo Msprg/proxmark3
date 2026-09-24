@@ -9,11 +9,15 @@ no history with master and is never meant to be merged.
 
 ## Setup
 
+From a clone of the fork's master (fresh, or `git reset --hard <fork>/master`):
+
 ```sh
-git clone https://github.com/Msprg/proxmark3 && cd proxmark3
-git worktree add ../proxmark3-tools local-tools
-../proxmark3-tools/setup.sh
+./setup-local-tools.sh
 ```
+
+It fetches this branch, checks it out at `../<repo dir>-tools`, and runs
+`setup.sh` here. It warns about local branches that still track one of the
+`root/` files; drop that commit from them or they keep their own copy.
 
 The links are ignored via `.git/info/exclude`, so they survive branch switches.
 If a checkout replaces or removes one (a branch tracking the same path,
