@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 # Restore the local-tools links after a checkout removed or replaced them.
-setup=$(dirname "$(readlink -f "$0")")/../setup.sh
+# follow our own link without readlink -f
+p=$0
+while [ -L "$p" ]; do
+    l=$(readlink "$p")
+    case $l in
+        /*) p=$l ;;
+        *) p=$(dirname "$p")/$l ;;
+    esac
+done
+setup=$(dirname "$p")/../setup.sh
 [ -x "$setup" ] || exit 0
 exec "$setup" --link-only "$PWD"

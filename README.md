@@ -19,6 +19,10 @@ It fetches this branch, checks it out at `../<repo dir>-tools`, and runs
 `setup.sh` here. It warns about local branches that still track one of the
 `root/` files; drop that commit from them or they keep their own copy.
 
+Works on Linux/WSL, macOS (stock bash 3.2 and BSD tools) and MSYS2/ProxSpace.
+On Windows the links must be native symlinks: enable Developer Mode (or run
+as admin), otherwise `ln` fails instead of silently copying.
+
 The links are ignored via `.git/info/exclude`, so they survive branch switches.
 If a checkout replaces or removes one (a branch tracking the same path,
 `git clean -X`), `hooks/post-checkout` puts it back on the next checkout. Run
