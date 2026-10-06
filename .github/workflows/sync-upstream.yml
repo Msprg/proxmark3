@@ -14,7 +14,7 @@ name: Sync fork with upstream
 
 on:
   schedule:
-    - cron: '23 */6 * * *'
+    - cron: '23 * * * *'
   workflow_dispatch:
 
 permissions:
