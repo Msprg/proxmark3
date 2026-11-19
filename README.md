@@ -28,6 +28,12 @@ If a checkout replaces or removes one (a branch tracking the same path,
 `git clean -X`), `hooks/post-checkout` puts it back on the next checkout. Run
 `setup.sh` again to restore them immediately.
 
+## Updating
+
+Re-run `./setup-local-tools.sh` in the checkout. It fetches this branch and
+fast-forwards the worktree before linking. Unpushed commits, a diverged branch,
+local edits in the way or an unreachable remote are reported and left alone.
+
 ## Editing
 
 Edit through the links, then commit in the tools worktree:
