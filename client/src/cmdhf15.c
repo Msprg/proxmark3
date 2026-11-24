@@ -2196,7 +2196,7 @@ static int CmdHF15Sim(const char *Cmd) {
             return PM3_EIO;
         }
 
-        if (kbd_enter_pressed() || ((timeout != (size_t) - 1) && (msclock() - t0 >= timeout))) {
+        if (kbd_enter_pressed() > 0 || ((timeout != (size_t) - 1) && (msclock() - t0 >= timeout))) {
             break;
         }
     }
